@@ -16,6 +16,9 @@ from sqlalchemy import (
     Integer,
     UniqueConstraint,
 )
+from sqlalchemy import (
+    text as sql_text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import (
@@ -62,6 +65,8 @@ class Document(Base):
     created_at: Mapped[datetime] = created_at_col()
     updated_at: Mapped[datetime] = updated_at_col()
     deleted_at: Mapped[datetime | None]
+    # Invoice boundaries found by the segmenter: [{unit_start, unit_end, confidence, reasons}]
+    segments: Mapped[list[Any] | None]
 
     units: Mapped[list[DocumentUnit]] = relationship(
         back_populates="document",
@@ -116,6 +121,10 @@ class DocumentUnit(Base):
     ocr_confidence: Mapped[Decimal | None] = mapped_column(Confidence)
     structured_data: Mapped[dict[str, Any] | None]
     image_quality: Mapped[dict[str, Any] | None]
+    # Set when this unit failed to parse; the rest of the document still proceeds.
+    error_code: Mapped[ErrorCode | None] = mapped_column(StrEnumText(ErrorCode))
+    # [{code, message, details?}] - non-fatal issues (truncation, repairs, ...)
+    warnings: Mapped[list[Any]] = mapped_column(server_default=sql_text("'[]'::jsonb"))
     created_at: Mapped[datetime] = created_at_col()
 
     document: Mapped[Document] = relationship(back_populates="units")
@@ -129,4 +138,5 @@ class DocumentUnit(Base):
         confidence_check("ocr_confidence"),
         enum_check("unit_type", UnitType),
         enum_check("extraction_method", ExtractionMethod),
+        enum_check("error_code", ErrorCode),
     )

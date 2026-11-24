@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -81,7 +81,7 @@ def seed(session: Session) -> bool:
     if exists:
         return False
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     pdf_sha = hashlib.sha256(b"seed-acme-invoices.pdf").hexdigest()
 
     # ---- PDF with two invoices -------------------------------------------------

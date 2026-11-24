@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 from app.models import Document, DocumentUnit, Extraction, ExtractionMethod, UnitType
 
 
-
 def make_document(session: Session, **kw: Any) -> Document:
     token = uuid.uuid4().hex
     defaults: dict[str, Any] = dict(

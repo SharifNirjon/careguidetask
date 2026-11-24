@@ -18,5 +18,42 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build:
+      context: ./backend
+      args:
+        INSTALL_DEV: "true"  # dev image: also contains pytest so tests run in-container
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-careguide}:${POSTGRES_PASSWORD:-careguide}@db:5432/${POSTGRES_DB:-careguide}
+      TEST_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-careguide}:${POSTGRES_PASSWORD:-careguide}@db:5432/careguide_test
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_ROOT: /data/storage
+      OMP_THREAD_LIMIT: "1"
+    volumes:
+      - storage:/data/storage
+      # dev: live code + tests/fixtures/docs so `docker compose run worker pytest` works
+      - ./backend:/app/backend
+      - ./tests:/app/tests
+      - ./scripts:/app/scripts
+      - ./docs:/app/docs
+      - ./pytest.ini:/app/pytest.ini:ro
+
 volumes:
   pgdata:
+  storage:

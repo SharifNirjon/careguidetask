@@ -97,7 +97,7 @@ def test_concurrent_reprocessing_is_serialized(committed_engine: Engine) -> None
                 add_extraction_version(second, document_id=doc_id, invoice_index=0,
                                        unit_start=0, unit_end=0)
                 second.commit()
-        except BaseException as exc:  # noqa: BLE001 - surfaced below
+        except BaseException as exc:
             errors.append(exc)
         finally:
             done.set()

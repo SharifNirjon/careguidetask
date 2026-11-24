@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -37,10 +37,9 @@ from tests.db.factories import make_document, make_extraction, make_unit
 
 def expect_violation(db: Session, constraint: str, action: Callable[[], object]) -> None:
     """Run `action` in a SAVEPOINT; assert it fails on exactly `constraint`."""
-    with pytest.raises(IntegrityError) as info:
-        with db.begin_nested():
-            action()
-            db.flush()
+    with pytest.raises(IntegrityError) as info, db.begin_nested():  # noqa: PT012 - helper
+        action()
+        db.flush()
     diag = info.value.orig.diag  # type: ignore[union-attr]
     assert constraint in (diag.constraint_name, diag.message_primary), diag.message_primary
 
@@ -102,9 +101,8 @@ def test_db_rejects_unknown_enum_value_even_via_raw_sql(db: Session) -> None:
 
 
 def test_orm_rejects_unknown_enum_value_before_sql(db: Session) -> None:
-    with pytest.raises(StatementError):
-        with db.begin_nested():
-            make_document(db, status="bogus")
+    with pytest.raises(StatementError), db.begin_nested():
+        make_document(db, status="bogus")
 
 
 def test_enum_columns_load_as_python_enums(db: Session) -> None:
@@ -114,7 +112,7 @@ def test_enum_columns_load_as_python_enums(db: Session) -> None:
 
 
 def test_updated_at_is_maintained_by_trigger_even_for_raw_sql(db: Session) -> None:
-    old = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    old = datetime(2000, 1, 1, tzinfo=UTC)
     doc = make_document(db, created_at=old, updated_at=old)
     db.execute(text("UPDATE documents SET status = 'queued' WHERE id = :id"), {"id": doc.id})
     db.refresh(doc)

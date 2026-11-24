@@ -13,7 +13,7 @@ from sqlalchemy.engine import URL
 from app.config import EMBEDDING_DIM
 from app.models import Base
 from app.models.base import StrEnumText
-from tests.db.conftest import _drop_database, alembic_config, make_migrated_engine
+from tests.support.db import alembic_config, drop_database, make_migrated_engine
 
 
 def test_upgrade_downgrade_upgrade_round_trip(test_url: URL) -> None:
@@ -41,7 +41,7 @@ def test_upgrade_downgrade_upgrade_round_trip(test_url: URL) -> None:
             command.upgrade(alembic_config(conn), "head")
     finally:
         engine.dispose()
-        _drop_database(scratch)
+        drop_database(scratch)
 
 
 def test_models_match_migrations(engine: Engine) -> None:
@@ -130,7 +130,7 @@ def test_enum_checks_match_python_enums(engine: Engine) -> None:
                 db_values = set(re.findall(r"'([^']+)'", definition))
                 assert db_values == {m.value for m in col.type.enum_cls}, (table.name, col.name)
                 checked += 1
-    assert checked == 14  # update when adding an enum-like column
+    assert checked == 15  # update when adding an enum-like column
 
 
 def test_special_indexes_and_generated_column(engine: Engine) -> None:
