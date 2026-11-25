@@ -87,12 +87,8 @@ class Document(Base):
         CheckConstraint("sha256 ~ '^[0-9a-f]{64}$'", name="sha256_hex"),
         CheckConstraint("page_count >= 0", name="page_count_nonneg"),
         CheckConstraint("duplicate_of_document_id <> id", name="not_duplicate_of_self"),
-        CheckConstraint(
-            "processing_finished_at >= processing_started_at", name="processing_window"
-        ),
-        CheckConstraint(
-            "status <> 'failed' OR error_code IS NOT NULL", name="failed_has_error_code"
-        ),
+        CheckConstraint("processing_finished_at >= processing_started_at", name="processing_window"),
+        CheckConstraint("status <> 'failed' OR error_code IS NOT NULL", name="failed_has_error_code"),
         enum_check("status", DocumentStatus),
         enum_check("error_code", ErrorCode),
         # Non-unique on purpose: duplicate uploads are stored and flagged, not rejected.
@@ -110,9 +106,7 @@ class DocumentUnit(Base):
     __tablename__ = "document_units"
 
     id: Mapped[uuid.UUID] = uuid_pk()
-    document_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("documents.id", ondelete="CASCADE")
-    )
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
     unit_type: Mapped[UnitType] = mapped_column(StrEnumText(UnitType))
     unit_index: Mapped[int] = mapped_column(Integer)
     sheet_name: Mapped[str | None]

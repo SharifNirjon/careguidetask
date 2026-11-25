@@ -13,6 +13,7 @@ traces, no library internals) and internal `details` for logs and events.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from app.models.enums import ErrorCode
@@ -31,6 +32,11 @@ USER_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.TIMEOUT: "Processing took too long.",
     ErrorCode.OCR_ERROR: "Text recognition failed for part of the file.",
     ErrorCode.INTERNAL_ERROR: "An unexpected error occurred while processing the file.",
+    ErrorCode.LLM_ERROR: "Automatic data extraction failed for this file.",
+    ErrorCode.LLM_UNAVAILABLE: "The extraction service is temporarily unavailable. It will retry.",
+    ErrorCode.LLM_QUOTA_DEFERRED: (
+        "Daily extraction capacity is used up; the file will be processed after it resets."
+    ),
 }
 
 
@@ -79,3 +85,11 @@ class OcrEngineError(PipelineError):
 
     def __init__(self, reason: str) -> None:
         super().__init__(ErrorCode.OCR_ERROR, details={"reason": reason})
+
+
+class DeferredError(PipelineError):
+    """Not a failure: the work must wait until `resume_at` (e.g. the LLM daily quota resets)."""
+
+    def __init__(self, resume_at: datetime) -> None:
+        super().__init__(ErrorCode.LLM_QUOTA_DEFERRED, details={"resume_at": resume_at.isoformat()})
+        self.resume_at = resume_at

@@ -1,6 +1,8 @@
 """Command-line entry point for local runs.
 
     python -m app.cli ingest <path-or-folder> [--sync] [--uploaded-by NAME]
+    python -m app.cli llm-check [--probe]
+    python -m app.cli extract <document_id> [--force]
 
 Without --sync the documents are enqueued to Celery; with --sync the whole
 pipeline runs inline and a summary table is printed.
@@ -21,6 +23,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from app import cli_llm
 from app.logging_setup import configure_logging
 from app.models import Document, DocumentUnit
 from app.pipeline import orchestrator
@@ -119,15 +122,18 @@ def ingest_paths(target: Path, *, sync: bool, uploaded_by: str) -> list[Row]:
     return rows
 
 
-def print_table(rows: Sequence[Row]) -> None:
-    cells = [[str(getattr(r, c)) for c in COLUMNS] for r in rows]
-    widths = [
-        max(len(c), *(len(row[i]) for row in cells)) if cells else len(c) for i, c in enumerate(COLUMNS)
-    ]
-    print("  ".join(c.ljust(w) for c, w in zip(COLUMNS, widths, strict=True)))
+def print_rows(columns: Sequence[str], rows: list[list[str]]) -> None:
+    """Plain aligned table on stdout (the CLI is the only place that prints)."""
+    widths = [max(len(c), *(len(r[i]) for r in rows)) if rows else len(c) for i, c in enumerate(columns)]
+    print("  ".join(c.ljust(w) for c, w in zip(columns, widths, strict=True)))
     print("  ".join("-" * w for w in widths))
-    for row in cells:
+    for row in rows:
         print("  ".join(v.ljust(w) for v, w in zip(row, widths, strict=True)))
+    print()
+
+
+def print_table(rows: Sequence[Row]) -> None:
+    print_rows(COLUMNS, [[str(getattr(r, c)) for c in COLUMNS] for r in rows])
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -137,13 +143,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     ingest.add_argument("path", type=Path)
     ingest.add_argument("--sync", action="store_true", help="run the pipeline inline")
     ingest.add_argument("--uploaded-by", default="cli")
+    check = sub.add_parser("llm-check", help="show the free-tier quota and configured models")
+    check.add_argument("--probe", action="store_true", help="send one tiny request per model (costs quota)")
+    extract = sub.add_parser("extract", help="(re-)extract one document and show every field")
+    extract.add_argument("document_id", type=uuid.UUID)
+    extract.add_argument("--force", action="store_true", help="bypass the LLM response cache")
     args = parser.parse_args(argv)
 
-    configure_logging(logging.WARNING)  # keep the table readable; JSON logs go to stderr
+    configure_logging(logging.WARNING)  # keep the tables readable; JSON logs go to stderr
+    if args.command == "llm-check":
+        return cli_llm.llm_check(probe=args.probe, print_rows=print_rows)
+    if args.command == "extract":
+        return cli_llm.extract(args.document_id, force=args.force, print_rows=print_rows)
     if not args.path.exists():
         parser.error(f"{args.path} does not exist")
-    rows = ingest_paths(args.path, sync=args.sync, uploaded_by=args.uploaded_by)
-    print_table(rows)
+    print_table(ingest_paths(args.path, sync=args.sync, uploaded_by=args.uploaded_by))
     return 0
 
 

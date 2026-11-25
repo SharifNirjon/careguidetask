@@ -33,15 +33,11 @@ class ProcessingJob(Base):
     __tablename__ = "processing_jobs"
 
     id: Mapped[uuid.UUID] = uuid_pk()
-    document_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("documents.id", ondelete="CASCADE")
-    )
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
     job_type: Mapped[JobType] = mapped_column(StrEnumText(JobType))
     # Not unique: Celery retries reuse the same task id across attempts.
     celery_task_id: Mapped[str | None] = mapped_column(index=True)
-    status: Mapped[JobStatus] = mapped_column(
-        StrEnumText(JobStatus), server_default=JobStatus.QUEUED.value
-    )
+    status: Mapped[JobStatus] = mapped_column(StrEnumText(JobStatus), server_default=JobStatus.QUEUED.value)
     attempt: Mapped[int] = mapped_column(Integer, server_default=text("1"))
     triggered_by: Mapped[str | None]
     error_code: Mapped[ErrorCode | None] = mapped_column(StrEnumText(ErrorCode))
@@ -91,18 +87,14 @@ class ProcessingEvent(Base):
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
     # Nullable: events can be logged before a job exists (e.g. ingest on upload).
     job_id: Mapped[uuid.UUID | None] = mapped_column()
-    document_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("documents.id", ondelete="CASCADE")
-    )
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
     stage: Mapped[Stage] = mapped_column(StrEnumText(Stage))
     status: Mapped[EventStatus] = mapped_column(StrEnumText(EventStatus))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     details: Mapped[dict[str, Any]] = mapped_column(server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = created_at_col()
 
-    job: Mapped[ProcessingJob | None] = relationship(
-        back_populates="events", foreign_keys=[job_id]
-    )
+    job: Mapped[ProcessingJob | None] = relationship(back_populates="events", foreign_keys=[job_id])
 
     __table_args__ = (
         ForeignKeyConstraint(

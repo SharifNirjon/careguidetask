@@ -36,3 +36,24 @@ def test_plan_round_trips_through_json() -> None:
 
     plan = ParsePlan(FileKind.PDF, [(0, 25), (25, 30)], ["repairing PDF document"])
     assert ParsePlan.from_dict(plan.to_dict()) == plan
+
+
+def test_quota_deferral_reschedules_after_the_reset(monkeypatch) -> None:
+    import uuid
+    from datetime import UTC, datetime
+
+    from app.pipeline import orchestrator
+    from app.pipeline.errors import DeferredError
+
+    resume = datetime(2026, 3, 2, tzinfo=UTC)
+    scheduled: list[dict] = []
+
+    def deferred(*_: object, **__: object) -> None:
+        raise DeferredError(resume)
+
+    monkeypatch.setattr(orchestrator, "default_context", lambda: None)
+    monkeypatch.setattr(orchestrator, "run_llm_stages", deferred)
+    monkeypatch.setattr(tasks.extract_document, "apply_async", lambda **kw: scheduled.append(kw))
+    result = tasks.extract_document.run(str(uuid.uuid4()), str(uuid.uuid4()))
+    assert result["status"] == "deferred"
+    assert scheduled[0]["queue"] == "llm" and scheduled[0]["eta"] >= resume

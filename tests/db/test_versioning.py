@@ -27,12 +27,15 @@ def _versions(session: Session, document_id) -> list[tuple[int, bool]]:
 
 def test_new_version_flips_is_current(db: Session) -> None:
     doc = make_document(db)
-    v1 = add_extraction_version(db, document_id=doc.id, invoice_index=0, unit_start=0,
-                                unit_end=0, total=Decimal("10"))
-    v2 = add_extraction_version(db, document_id=doc.id, invoice_index=0, unit_start=0,
-                                unit_end=0, total=Decimal("11"))
-    v3 = add_extraction_version(db, document_id=doc.id, invoice_index=0, unit_start=0,
-                                unit_end=1, total=Decimal("12"))
+    v1 = add_extraction_version(
+        db, document_id=doc.id, invoice_index=0, unit_start=0, unit_end=0, total=Decimal("10")
+    )
+    v2 = add_extraction_version(
+        db, document_id=doc.id, invoice_index=0, unit_start=0, unit_end=0, total=Decimal("11")
+    )
+    v3 = add_extraction_version(
+        db, document_id=doc.id, invoice_index=0, unit_start=0, unit_end=1, total=Decimal("12")
+    )
     assert [(v.version, v.is_current) for v in (v1, v2, v3)] == [(1, False), (2, False), (3, True)]
     assert _versions(db, doc.id) == [(1, False), (2, False), (3, True)]
     assert v1.lock_version == 2  # the flip went through the ORM and bumped the lock
@@ -42,15 +45,13 @@ def test_unknown_document_raises(db: Session) -> None:
     import uuid
 
     with pytest.raises(NoResultFound):
-        add_extraction_version(db, document_id=uuid.uuid4(), invoice_index=0,
-                               unit_start=0, unit_end=0)
+        add_extraction_version(db, document_id=uuid.uuid4(), invoice_index=0, unit_start=0, unit_end=0)
 
 
 def test_optimistic_locking_detects_concurrent_review(committed_engine: Engine) -> None:
     with Session(committed_engine) as s:
         doc = make_document(s)
-        ext = add_extraction_version(s, document_id=doc.id, invoice_index=0,
-                                     unit_start=0, unit_end=0)
+        ext = add_extraction_version(s, document_id=doc.id, invoice_index=0, unit_start=0, unit_end=0)
         s.commit()
         ext_id = ext.id
 
@@ -72,7 +73,9 @@ def test_optimistic_locking_detects_concurrent_review(committed_engine: Engine) 
         final = s.get(Extraction, ext_id)
         assert final is not None
         assert (final.review_status, final.reviewed_by, final.lock_version) == (
-            ReviewStatus.APPROVED, "alice", 2,
+            ReviewStatus.APPROVED,
+            "alice",
+            2,
         )
 
 
@@ -94,8 +97,7 @@ def test_concurrent_reprocessing_is_serialized(committed_engine: Engine) -> None
     def second_worker() -> None:
         try:
             with Session(committed_engine) as second:
-                add_extraction_version(second, document_id=doc_id, invoice_index=0,
-                                       unit_start=0, unit_end=0)
+                add_extraction_version(second, document_id=doc_id, invoice_index=0, unit_start=0, unit_end=0)
                 second.commit()
         except BaseException as exc:
             errors.append(exc)

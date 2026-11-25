@@ -10,23 +10,28 @@ Failure policy:
 from __future__ import annotations
 
 import logging
+import random
 import uuid
+from datetime import timedelta
 from typing import Any
 
 from celery import Task, chord
 from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy.exc import OperationalError
 
-from app.config import get_pipeline_settings
-from app.models import Stage
+from app.config import get_pipeline_settings, get_validation_settings
+from app.db.session import get_sessionmaker
+from app.models import DocumentStatus, Stage
 from app.models.enums import ErrorCode
 from app.pipeline import orchestrator
-from app.pipeline.errors import PermanentError, PipelineError, TransientError
+from app.pipeline.errors import DeferredError, PermanentError, PipelineError, TransientError
 from app.pipeline.orchestrator import ParsePlan
-from app.workers.celery_app import QUEUE_DEFAULT, QUEUE_OCR, celery_app
+from app.validation.reconciliation import ReconciliationService
+from app.workers.celery_app import QUEUE_DEFAULT, QUEUE_LLM, QUEUE_OCR, celery_app
 
 log = logging.getLogger(__name__)
 _settings = get_pipeline_settings()
+_rng = random.Random()
 
 
 class PipelineTask(Task):
@@ -107,6 +112,23 @@ def finalize_document(self: Task, document_id: str, job_id: str, plan: dict[str,
     status = orchestrator.finalize(
         orchestrator.default_context(), uuid.UUID(document_id), uuid.UUID(job_id), ParsePlan.from_dict(plan)
     )
+    if status is DocumentStatus.PROCESSING:  # parsed: hand over to the LLM queue
+        extract_document.apply_async(args=[document_id, job_id], queue=QUEUE_LLM)
+    return {"status": status.value}
+
+
+@celery_app.task(base=PipelineTask, bind=True, name="pipeline.extract_document")
+def extract_document(self: Task, document_id: str, job_id: str) -> dict[str, Any]:
+    """extract -> validate -> embed. Quota exhaustion re-schedules this task for
+    after the UTC reset (a NEW task, so deferrals don't consume retries)."""
+    try:
+        status = orchestrator.run_llm_stages(
+            orchestrator.default_context(), uuid.UUID(document_id), uuid.UUID(job_id)
+        )
+    except DeferredError as deferred:
+        eta = deferred.resume_at + timedelta(seconds=_rng.uniform(0, _settings.llm_defer_jitter_s))
+        extract_document.apply_async(args=[document_id, job_id], queue=QUEUE_LLM, eta=eta)
+        return {"status": "deferred", "eta": eta.isoformat()}
     return {"status": status.value}
 
 
@@ -133,3 +155,15 @@ def chord_failed(*args: Any) -> None:
         error,
         Stage.PARSE,
     )
+
+
+@celery_app.task(name="reconciliation.run", acks_late=True)
+def run_reconciliation(
+    left_document_ids: list[str], right_document_ids: list[str], actor: str | None = None
+) -> dict[str, Any]:
+    """User-requested batch check (Step 6 exposes it). Returns the run id + counts."""
+    service = ReconciliationService(session_factory=get_sessionmaker(), settings=get_validation_settings())
+    run_id, report = service.run(
+        [uuid.UUID(i) for i in left_document_ids], [uuid.UUID(i) for i in right_document_ids], actor
+    )
+    return {"run_id": str(run_id), **report.summary()["counts"]}

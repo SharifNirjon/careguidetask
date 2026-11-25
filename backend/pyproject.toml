@@ -19,27 +19,3 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["app*"]
-
-[tool.ruff]
-line-length = 110
-target-version = "py311"
-extend-exclude = ["**/migrations/versions"]
-force-exclude = true
-
-[tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PL", "PT"]
-ignore = [
-    "PLR0913",  # many keyword-only args are fine for explicit DI
-    "PLR2004",  # magic values in tests
-    "RUF001",   # ambiguous unicode in test strings is intentional (NFKC tests)
-    "RUF012",
-    "PLC0415",  # local imports used deliberately (lazy Celery import, test scoping)
-    "PLR0911",  # small type-dispatch functions read best as early returns
-    "PLR0917",  # Celery task signatures are positional by nature
-]
-
-[tool.ruff.lint.isort]
-known-first-party = ["app", "tests"]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/**" = ["PT018"]  # several related asserts on one line read fine in tests

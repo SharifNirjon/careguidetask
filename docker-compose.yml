@@ -39,12 +39,16 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    env_file:
+      - path: .env  # OPENROUTER_API_KEY and overrides; gitignored, optional
+        required: false
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-careguide}:${POSTGRES_PASSWORD:-careguide}@db:5432/${POSTGRES_DB:-careguide}
       TEST_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-careguide}:${POSTGRES_PASSWORD:-careguide}@db:5432/careguide_test
       REDIS_URL: redis://redis:6379/0
       STORAGE_ROOT: /data/storage
       OMP_THREAD_LIMIT: "1"
+      RUN_LIVE_LLM: ${RUN_LIVE_LLM:-0}
     volumes:
       - storage:/data/storage
       # dev: live code + tests/fixtures/docs so `docker compose run worker pytest` works

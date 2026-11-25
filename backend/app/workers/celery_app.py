@@ -18,6 +18,7 @@ from app.logging_setup import configure_logging
 
 QUEUE_DEFAULT = "default"
 QUEUE_OCR = "ocr"
+QUEUE_LLM = "llm"  # rate-limited LLM work: its waits must never block OCR workers
 
 _settings = get_pipeline_settings()
 
@@ -37,6 +38,10 @@ celery_app.conf.update(
     accept_content=["json"],
     result_expires=24 * 3600,
     broker_connection_retry_on_startup=True,
+    # Quota deferrals are scheduled ~24 h ahead (eta). With acks_late, Redis
+    # redelivers any task not acked within the visibility timeout, so it must
+    # exceed the longest eta. Trade-off: a task on a crashed HOST waits this long.
+    broker_transport_options={"visibility_timeout": _settings.broker_visibility_timeout_s},
 )
 
 

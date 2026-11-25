@@ -1,4 +1,5 @@
 # Runtime dependencies, pinned. Update deliberately and re-run tests + benchmark.
+# openai stays on 2.x: 3.x moved to httpx2, which respx cannot mock (see docs/extraction.md).
 alembic==1.20.1
 celery[redis]==5.7.0
 charset-normalizer==3.5.3
@@ -6,15 +7,17 @@ defusedxml==0.7.1
 fastapi==0.165.0
 numpy==2.4.6
 olefile==0.47
+openai==2.54.0
 opencv-python-headless==5.1.0.95
 openpyxl==3.1.5
 pgvector==0.5.1
 pillow==13.0.0
 psycopg[binary]==3.3.9
-pydantic==2.14.4
 pydantic-settings==2.16.3
+pydantic==2.14.4
 pymupdf==2.1
 pytesseract==0.3.13
+rapidfuzz==3.14.6
 redis==8.2.0
 SQLAlchemy==2.1.9
 xlrd==2.0.2

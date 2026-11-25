@@ -151,7 +151,8 @@ erDiagram
         uuid extraction_id FK
         int chunk_index
         text content
-        vector embedding "VECTOR(384), HNSW cosine"
+        vector embedding "VECTOR(1024), HNSW cosine"
+        text embedding_space
         text embedding_model
         tsvector tsv "generated, GIN"
     }
@@ -201,14 +202,14 @@ Because a partial unique index **cannot be deferred**, the old row has to be fli
 
 **Append-only audit tables.** `corrections` and `processing_events` are facts about the past. Triggers enforce append-only in the database (`restrict_violation` on UPDATE), so neither a bug nor an ad-hoc `UPDATE` can rewrite history. `validation_issues` is append-only *in spirit*: re-validation supersedes rows and never deletes them, but it does allow the `resolved_*` and `superseded_at` fields to be set. DELETE is still possible, so document purges and retention jobs work.
 
-**pgvector inside Postgres instead of a separate vector DB.** One system to run, back up and secure. Embeddings sit next to the data they describe, so semantic search can filter and join on document status, soft deletes, supplier and so on in a single query, inside one transaction. There's no dual write and no sync job between the database and a vector store. HNSW gives good recall at our scale: millions of 384-dim vectors fit comfortably. The trade-offs:
+**pgvector inside Postgres instead of a separate vector DB.** One system to run, back up and secure. Embeddings sit next to the data they describe, so semantic search can filter and join on document status, soft deletes, supplier and so on in a single query, inside one transaction. There's no dual write and no sync job between the database and a vector store. HNSW gives good recall at our scale: millions of 1024-dim vectors fit comfortably. The trade-offs:
 - HNSW builds are memory-hungry and slow on big tables. Raise `maintenance_work_mem` when building, and use `CREATE INDEX CONCURRENTLY` in later migrations.
 - Filtered vector search can return fewer than `LIMIT` rows. Use `SET hnsw.iterative_scan = relaxed_order` (pgvector ≥ 0.8) or raise `hnsw.ef_search`.
 - Vector work competes with OLTP for the same CPU and RAM.
 
 Move to a dedicated vector store only if vector volume or QPS outgrows a read replica.
 
-**`EMBEDDING_DIM` is one constant, and changing it is a migration.** `app.config.EMBEDDING_DIM` (384, for all-MiniLM-L6-v2) sets the column type in the models. The migration deliberately **hardcodes** `VECTOR(384)` instead of importing the constant: migrations are snapshots, and importing would silently rewrite history the day the constant changes. To change models, write a migration that drops `ix_chunks_embedding_hnsw`, alters `chunks.embedding` to `VECTOR(<new>)` (after `UPDATE chunks SET embedding = NULL, embedding_model = NULL`), and recreates the index, then re-embed everything (`job_type = 'reembed'`). `test_embedding_dimension_matches_config` fails if the constant and the database disagree. Even at the same dimension, vectors from different models are not comparable, so queries always filter `embedding_model`.
+**`EMBEDDING_DIM` is one constant, and changing it is a migration.** `app.config.EMBEDDING_DIM` (1024 since migration 0003; larger native embeddings are truncated and L2-normalized) sets the column type in the models. Each migration deliberately **hardcodes** its `VECTOR(n)` instead of importing the constant: migrations are snapshots, and importing would silently rewrite history the day the constant changes. To change models, write a migration that drops `ix_chunks_embedding_hnsw`, alters `chunks.embedding` to `VECTOR(<new>)` (after `UPDATE chunks SET embedding = NULL, embedding_model = NULL`), and recreates the index, then re-embed everything (`job_type = 'reembed'`). `test_embedding_dimension_matches_config` fails if the constant and the database disagree. Even at the same dimension, vectors from different models are not comparable, so queries always filter `embedding_space` (see docs/extraction.md).
 
 **`'simple'` full-text config.** `tsv` is `to_tsvector('simple', content)`: lower-casing and tokenizing only, with no stemming and no stop words. Invoices are dense with identifiers (`INV-2024-001`, IBANs, SKUs), proper names and mixed languages. Language stemmers mangle these ("ACME Supplies" → "acm suppli") and drop words, and an English stemmer is simply wrong for German or French invoices. The trade-off is weaker recall on natural-language queries ("invoices" doesn't match "invoice"). Semantic search covers that gap in hybrid search, and `pg_trgm` covers fuzzy name matching.
 
@@ -256,7 +257,7 @@ SELECT c.id, c.document_id, c.content,
        c.embedding <=> CAST(:query_embedding AS vector) AS cosine_distance
 FROM chunks c
 JOIN documents d ON d.id = c.document_id AND d.deleted_at IS NULL
-WHERE c.embedding_model = :model
+WHERE c.embedding_space = :space
 ORDER BY c.embedding <=> CAST(:query_embedding AS vector)
 LIMIT :limit;
 ```
@@ -281,7 +282,7 @@ semantic AS (
     FROM (
         SELECT c.id, c.embedding <=> CAST(:query_embedding AS vector) AS dist
         FROM chunks c
-        WHERE c.embedding_model = :model
+        WHERE c.embedding_space = :space
         ORDER BY c.embedding <=> CAST(:query_embedding AS vector)
         LIMIT 50
     ) s

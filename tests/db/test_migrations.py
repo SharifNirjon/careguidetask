@@ -23,9 +23,7 @@ def test_upgrade_downgrade_upgrade_round_trip(test_url: URL) -> None:
         with engine.begin() as conn:
             command.downgrade(alembic_config(conn), "base")
         with engine.connect() as conn:
-            tables = conn.scalars(
-                text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
-            ).all()
+            tables = conn.scalars(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")).all()
             functions = conn.scalars(
                 text(
                     "SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
@@ -130,15 +128,13 @@ def test_enum_checks_match_python_enums(engine: Engine) -> None:
                 db_values = set(re.findall(r"'([^']+)'", definition))
                 assert db_values == {m.value for m in col.type.enum_cls}, (table.name, col.name)
                 checked += 1
-    assert checked == 15  # update when adding an enum-like column
+    assert checked == 16  # update when adding an enum-like column
 
 
 def test_special_indexes_and_generated_column(engine: Engine) -> None:
     with engine.connect() as conn:
         idx = dict(
-            conn.execute(
-                text("SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public'")
-            ).all()
+            conn.execute(text("SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public'")).all()
         )
         tsv_generated = conn.scalar(
             text(
@@ -168,4 +164,3 @@ def test_session_module_applies_statement_timeout(test_url: URL, monkeypatch) ->
             assert conn.scalar(text("SHOW statement_timeout")) == "1234ms"
     finally:
         eng.dispose()
-

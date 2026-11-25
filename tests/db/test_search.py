@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.config import EMBEDDING_DIM, EMBEDDING_MODEL_DEFAULT
+from app.config import EMBEDDING_DIM, EMBEDDING_MODEL_DEFAULT, EMBEDDING_SPACE_DEFAULT
 from app.db.seed import fake_embedding, seed
 from app.models import Chunk, Document, Extraction
 from tests.db.factories import make_document, make_unit
@@ -26,8 +26,13 @@ def _chunk(db: Session, content: str, embedding: list[float] | None = None) -> C
     doc = make_document(db)
     unit = make_unit(db, doc, text=content)
     c = Chunk(
-        document_id=doc.id, unit_id=unit.id, chunk_index=0, content=content,
-        embedding=embedding, embedding_model=EMBEDDING_MODEL_DEFAULT if embedding else None,
+        document_id=doc.id,
+        unit_id=unit.id,
+        chunk_index=0,
+        content=content,
+        embedding=embedding,
+        embedding_model=EMBEDDING_MODEL_DEFAULT if embedding else None,
+        embedding_space=EMBEDDING_SPACE_DEFAULT if embedding else None,
     )
     db.add(c)
     db.flush()
@@ -37,9 +42,7 @@ def _chunk(db: Session, content: str, embedding: list[float] | None = None) -> C
 def test_keyword_search_matches_invoice_codes(db: Session) -> None:
     hit = _chunk(db, "Invoice INV-2024-001 from ACME Supplies")
     _chunk(db, "Invoice INV-2024-777 from Globex")
-    q = text(
-        "SELECT id FROM chunks WHERE tsv @@ websearch_to_tsquery('simple', :q)"
-    )
+    q = text("SELECT id FROM chunks WHERE tsv @@ websearch_to_tsquery('simple', :q)")
     assert db.scalars(q, {"q": "INV-2024-001"}).all() == [hit.id]
     assert db.scalars(q, {"q": "acme"}).all() == [hit.id]  # case-insensitive
 
@@ -76,10 +79,7 @@ def test_hnsw_index_is_usable_for_knn(db: Session) -> None:
     db.execute(text("SET LOCAL enable_seqscan = off"))
     plan = "\n".join(
         db.scalars(
-            text(
-                "EXPLAIN SELECT id FROM chunks "
-                "ORDER BY embedding <=> CAST(:v AS vector) LIMIT 5"
-            ),
+            text("EXPLAIN SELECT id FROM chunks ORDER BY embedding <=> CAST(:v AS vector) LIMIT 5"),
             {"v": str(_basis(0))},
         ).all()
     )
@@ -89,16 +89,21 @@ def test_hnsw_index_is_usable_for_knn(db: Session) -> None:
 def test_trigram_fuzzy_supplier_match(db: Session) -> None:
     doc = make_document(db)
     for i, name in enumerate(["acme supplies", "acme suplies gmbh", "globex corporation"]):
-        db.add(Extraction(document_id=doc.id, invoice_index=i, unit_start=0, unit_end=0,
-                          supplier_name_norm=name))
+        db.add(
+            Extraction(document_id=doc.id, invoice_index=i, unit_start=0, unit_end=0, supplier_name_norm=name)
+        )
     db.flush()
-    rows = db.execute(
-        text(
-            "SELECT supplier_name_norm FROM extractions "
-            "WHERE supplier_name_norm % :s ORDER BY similarity(supplier_name_norm, :s) DESC"
-        ),
-        {"s": "acme supplies"},
-    ).scalars().all()
+    rows = (
+        db.execute(
+            text(
+                "SELECT supplier_name_norm FROM extractions "
+                "WHERE supplier_name_norm % :s ORDER BY similarity(supplier_name_norm, :s) DESC"
+            ),
+            {"s": "acme supplies"},
+        )
+        .scalars()
+        .all()
+    )
     assert rows == ["acme supplies", "acme suplies gmbh"]
 
 
@@ -109,16 +114,12 @@ def _doc_sql_blocks() -> list[str]:
 def test_docs_sql_examples_execute(db: Session) -> None:
     """Every ```sql block in docs/database.md runs and returns rows on seed data."""
     seed(db)
-    pdf_id = db.scalar(
-        select(Document.id).where(Document.storage_key == "seed/acme_invoices_march.pdf")
-    )
-    page0 = db.scalar(
-        select(Chunk.content).where(Chunk.document_id == pdf_id, Chunk.chunk_index == 0)
-    )
+    pdf_id = db.scalar(select(Document.id).where(Document.storage_key == "seed/acme_invoices_march.pdf"))
+    page0 = db.scalar(select(Chunk.content).where(Chunk.document_id == pdf_id, Chunk.chunk_index == 0))
     params = {
         "q": "INV-2024-001",
         "query_embedding": str(fake_embedding(page0)),
-        "model": EMBEDDING_MODEL_DEFAULT,
+        "space": EMBEDDING_SPACE_DEFAULT,
         "limit": 10,
         "document_id": pdf_id,
         "supplier_norm": "acme suppliez",

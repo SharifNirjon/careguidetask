@@ -28,4 +28,4 @@ RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \
  && chown -R app:app /data/storage
 USER app
 
-CMD ["celery", "-A", "app.workers.celery_app", "worker", "-Q", "ocr,default", "--loglevel=INFO"]
+CMD ["celery", "-A", "app.workers.celery_app", "worker", "-Q", "ocr,default,llm", "--loglevel=INFO"]

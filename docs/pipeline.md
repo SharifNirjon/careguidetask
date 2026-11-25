@@ -206,12 +206,8 @@ ocr_attempts[], transform`.
 
 ## Hooks for later steps
 
-- **Step 4 (extraction):** replace `not_implemented_stage("Step 4")` in
-  `orchestrator.POST_PARSE_STAGES`. It receives the session, the document and the unit stats, and returns
-  `(status, details)`. An LLM-assisted segmenter implements `Segmenter` and goes into
-  `PipelineContext.segmenter`.
-- **Step 5 (validation)** and **Step 7 (embeddings):** same pattern, using the `validate` and `embed`
-  stubs.
+- **Step 4 (extraction):** implemented. `finalize()` stops after segmentation (`PARSE_TAIL_STAGES`) and `run_llm_stages()` runs extract → validate → embed on the Celery queue `llm`; see docs/extraction.md.
+- **Step 5 (validation)** and **Step 7 (embeddings):** replace the stubs in `POST_EXTRACT_STAGES`.
 - **Step 6 (API):** call `ingest_file(stream, filename, user, session, storage=…,
   enqueue=enqueue_document)` and map `PermanentError.code` to 413/415/422.
 

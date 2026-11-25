@@ -12,6 +12,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.orm import Session
 
+from app.config import EMBEDDING_DIM
 from app.models import (
     Chunk,
     Correction,
@@ -57,9 +58,7 @@ def test_duplicate_uploads_are_stored_and_flagged(db: Session) -> None:
 
 def test_storage_key_is_unique(db: Session) -> None:
     doc = make_document(db)
-    expect_violation(
-        db, "uq_documents_storage_key", lambda: make_document(db, storage_key=doc.storage_key)
-    )
+    expect_violation(db, "uq_documents_storage_key", lambda: make_document(db, storage_key=doc.storage_key))
 
 
 @pytest.mark.parametrize(
@@ -94,9 +93,7 @@ def test_db_rejects_unknown_enum_value_even_via_raw_sql(db: Session) -> None:
     expect_violation(
         db,
         "ck_documents_status",
-        lambda: db.execute(
-            text("UPDATE documents SET status = 'bogus' WHERE id = :id"), {"id": doc.id}
-        ),
+        lambda: db.execute(text("UPDATE documents SET status = 'bogus' WHERE id = :id"), {"id": doc.id}),
     )
 
 
@@ -126,9 +123,7 @@ def test_updated_at_is_maintained_by_trigger_even_for_raw_sql(db: Session) -> No
 def test_unit_position_is_unique_per_document(db: Session) -> None:
     doc = make_document(db)
     make_unit(db, doc, 0)
-    expect_violation(
-        db, "uq_document_units_document_id_unit_type_unit_index", lambda: make_unit(db, doc, 0)
-    )
+    expect_violation(db, "uq_document_units_document_id_unit_type_unit_index", lambda: make_unit(db, doc, 0))
 
 
 def test_unit_index_and_ocr_confidence_bounds(db: Session) -> None:
@@ -217,8 +212,11 @@ def test_validation_issue_history_and_related_extraction(db: Session) -> None:
     a = make_extraction(db, doc, invoice_index=0)
     b = make_extraction(db, doc, invoice_index=1)
     issue = ValidationIssue(
-        extraction_id=a.id, related_extraction_id=b.id, rule_code=RuleCode.DUPLICATE_INVOICE,
-        severity=Severity.WARNING, message="possible duplicate",
+        extraction_id=a.id,
+        related_extraction_id=b.id,
+        rule_code=RuleCode.DUPLICATE_INVOICE,
+        severity=Severity.WARNING,
+        message="possible duplicate",
     )
     db.add(issue)
     db.flush()
@@ -236,7 +234,10 @@ def test_validation_issue_history_and_related_extraction(db: Session) -> None:
 def test_corrections_are_append_only(db: Session) -> None:
     ext = make_extraction(db, make_document(db))
     corr = Correction(
-        extraction_id=ext.id, field_path="total", old_value="1.0000", new_value="2.0000",
+        extraction_id=ext.id,
+        field_path="total",
+        old_value="1.0000",
+        new_value="2.0000",
         corrected_by="reviewer",
     )
     db.add(corr)
@@ -254,8 +255,12 @@ def test_deleting_line_item_keeps_its_correction(db: Session) -> None:
     db.add(item)
     db.flush()
     corr = Correction(
-        extraction_id=ext.id, line_item_id=item.id, field_path="line_items[0].amount",
-        old_value="5.0000", new_value="6.0000", corrected_by="reviewer",
+        extraction_id=ext.id,
+        line_item_id=item.id,
+        field_path="line_items[0].amount",
+        old_value="5.0000",
+        new_value="6.0000",
+        corrected_by="reviewer",
     )
     db.add(corr)
     db.flush()
@@ -267,14 +272,15 @@ def test_deleting_line_item_keeps_its_correction(db: Session) -> None:
 def test_json_null_vs_sql_null_in_corrections(db: Session) -> None:
     ext = make_extraction(db, make_document(db))
     corr = Correction(
-        extraction_id=ext.id, field_path="tax", old_value=None, new_value={"amount": "8.00"},
+        extraction_id=ext.id,
+        field_path="tax",
+        old_value=None,
+        new_value={"amount": "8.00"},
         corrected_by="reviewer",
     )
     db.add(corr)
     db.flush()
-    is_sql_null = db.scalar(
-        text("SELECT old_value IS NULL FROM corrections WHERE id = :id"), {"id": corr.id}
-    )
+    is_sql_null = db.scalar(text("SELECT old_value IS NULL FROM corrections WHERE id = :id"), {"id": corr.id})
     assert is_sql_null is True
 
 
@@ -283,9 +289,7 @@ def test_processing_events_are_append_only(db: Session) -> None:
     job = ProcessingJob(document_id=doc.id, job_type=JobType.FULL)
     db.add(job)
     db.flush()
-    event = ProcessingEvent(
-        job_id=job.id, document_id=doc.id, stage=Stage.PARSE, status=EventStatus.STARTED
-    )
+    event = ProcessingEvent(job_id=job.id, document_id=doc.id, stage=Stage.PARSE, status=EventStatus.STARTED)
     db.add(event)
     db.flush()
     assert isinstance(event.id, int)
@@ -333,8 +337,11 @@ def test_chunk_document_must_match_its_unit_and_extraction(db: Session) -> None:
         "fk_chunks_extraction_id_extractions",
         lambda: db.add(
             Chunk(
-                document_id=doc_b.id, unit_id=unit_b.id, extraction_id=ext_a.id,
-                chunk_index=0, content="x",
+                document_id=doc_b.id,
+                unit_id=unit_b.id,
+                extraction_id=ext_a.id,
+                chunk_index=0,
+                content="x",
             )
         ),
     )
@@ -348,8 +355,11 @@ def test_chunk_embedding_requires_model_name(db: Session) -> None:
         "ck_chunks_embedding_has_model",
         lambda: db.add(
             Chunk(
-                document_id=doc.id, unit_id=unit.id, chunk_index=0, content="x",
-                embedding=[0.0] * 384,
+                document_id=doc.id,
+                unit_id=unit.id,
+                chunk_index=0,
+                content="x",
+                embedding=[0.0] * EMBEDDING_DIM,
             )
         ),
     )
@@ -359,8 +369,7 @@ def test_chunk_embedding_requires_model_name(db: Session) -> None:
 
 
 def _reconcile_kw() -> dict:
-    return dict(match_key="k", match_method=MatchMethod.INVOICE_NUMBER,
-                status=ReconciliationStatus.MATCHED)
+    return dict(match_key="k", match_method=MatchMethod.INVOICE_NUMBER, status=ReconciliationStatus.MATCHED)
 
 
 def test_reconciliation_pair_is_canonical(db: Session) -> None:
@@ -370,9 +379,7 @@ def test_reconciliation_pair_is_canonical(db: Session) -> None:
     expect_violation(
         db,
         "ck_reconciliations_canonical_pair_order",
-        lambda: db.add(
-            Reconciliation(left_extraction_id=hi, right_extraction_id=lo, **_reconcile_kw())
-        ),
+        lambda: db.add(Reconciliation(left_extraction_id=hi, right_extraction_id=lo, **_reconcile_kw())),
     )
     rec = Reconciliation.between(
         hi, lo, differences=[{"field": "total", "left": "1", "right": "2"}], **_reconcile_kw()
@@ -407,7 +414,14 @@ def test_hard_delete_cascades_through_everything(db: Session) -> None:
     assert len(doc_ids) == 3
     db.execute(text("DELETE FROM documents WHERE storage_key LIKE 'seed/%'"))
     for table in (
-        "document_units", "extractions", "line_items", "validation_issues", "corrections",
-        "processing_jobs", "processing_events", "reconciliations", "chunks",
+        "document_units",
+        "extractions",
+        "line_items",
+        "validation_issues",
+        "corrections",
+        "processing_jobs",
+        "processing_events",
+        "reconciliations",
+        "chunks",
     ):
         assert db.scalar(text(f"SELECT count(*) FROM {table}")) == 0, table

@@ -60,4 +60,16 @@ def committed_engine(engine: Engine) -> Iterator[Engine]:
     """
     yield engine
     with engine.begin() as conn:
-        conn.execute(text("TRUNCATE documents CASCADE"))
+        conn.execute(text("TRUNCATE documents, reconciliation_runs CASCADE"))
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Live LLM tests spend real quota: they only run when RUN_LIVE_LLM=1."""
+    import os
+
+    if os.environ.get("RUN_LIVE_LLM") == "1":
+        return
+    skip = pytest.mark.skip(reason="live LLM test: set RUN_LIVE_LLM=1 to run (spends quota)")
+    for item in items:
+        if "live" in item.keywords:
+            item.add_marker(skip)

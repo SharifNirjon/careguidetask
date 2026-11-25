@@ -14,6 +14,7 @@ from app.models.enums import (
     ReconciliationStatus,
     ReviewStatus,
     RuleCode,
+    RunStatus,
     Severity,
     Stage,
     UnitType,
@@ -23,7 +24,9 @@ from app.models.extraction import (
     Extraction,
     LineItem,
     Reconciliation,
+    ReconciliationRun,
     ValidationIssue,
+    issue_fingerprint,
 )
 from app.models.processing import ProcessingEvent, ProcessingJob
 from app.models.search import Chunk
@@ -48,11 +51,14 @@ __all__ = [
     "ProcessingEvent",
     "ProcessingJob",
     "Reconciliation",
+    "ReconciliationRun",
     "ReconciliationStatus",
     "ReviewStatus",
     "RuleCode",
+    "RunStatus",
     "Severity",
     "Stage",
     "UnitType",
     "ValidationIssue",
+    "issue_fingerprint",
 ]

@@ -26,14 +26,25 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
+from redis import Redis
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.config import PipelineSettings, get_pipeline_settings
+from app.config import (
+    PipelineSettings,
+    get_extraction_settings,
+    get_llm_settings,
+    get_pipeline_settings,
+    get_validation_settings,
+)
 from app.db.session import get_sessionmaker
+from app.extraction.prompts import load_prompt
+from app.extraction.service import ExtractionService
+from app.llm.clock import SystemClock
+from app.llm.factory import build_gateways
 from app.models import (
     Document,
     DocumentStatus,
@@ -47,12 +58,15 @@ from app.models import (
 )
 from app.models.enums import ErrorCode
 from app.pipeline import csv_parser, images, pdf, spreadsheet
-from app.pipeline.errors import PermanentError, PipelineError
+from app.pipeline.errors import DeferredError, PermanentError, PipelineError, TransientError
+from app.pipeline.extract_stage import DocumentExtractor, run_extract, segment_event, summary_event
 from app.pipeline.ocr.base import OcrEngine
 from app.pipeline.ocr.tesseract import TesseractEngine
 from app.pipeline.segment import HeuristicSegmenter, Segmenter, segment_document
 from app.pipeline.storage import LocalStorage, Storage
 from app.pipeline.types import FileKind, ParsedUnit
+from app.validation.policy import Trigger
+from app.validation.service import DocumentValidation, ValidationService
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +87,8 @@ class PipelineContext:
     ocr_engine_factory: Callable[[], OcrEngine]
     settings: PipelineSettings
     segmenter: Segmenter = field(default_factory=HeuristicSegmenter)
+    extractor: DocumentExtractor | None = None  # None: the extract stage is skipped
+    validator: DocumentValidator | None = None  # None: the validate stage is skipped
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -90,11 +106,23 @@ class PipelineContext:
 @lru_cache(maxsize=1)
 def default_context() -> PipelineContext:
     settings = get_pipeline_settings()
+    llm_settings = get_llm_settings()
+    session_factory = get_sessionmaker()
+    gateways = build_gateways(llm_settings, Redis.from_url(llm_settings.redis_url))
+    extractor = ExtractionService(
+        session_factory=session_factory,
+        chat=gateways.chat,
+        prompt=load_prompt(),
+        settings=get_extraction_settings(),
+        clock=SystemClock(),
+    )
     return PipelineContext(
-        session_factory=get_sessionmaker(),
+        session_factory=session_factory,
         storage=LocalStorage(settings.storage_root),
         ocr_engine_factory=lambda: TesseractEngine(settings.ocr_langs, settings.ocr_page_timeout_s),
         settings=settings,
+        extractor=extractor,
+        validator=ValidationService(session_factory=session_factory, settings=get_validation_settings()),
     )
 
 
@@ -413,6 +441,32 @@ def run_segment_stage(
     return EventStatus.SUCCEEDED, {"segments": len(segments), "confidences": [s.confidence for s in segments]}
 
 
+class DocumentValidator(Protocol):
+    def validate_document(self, document_id: uuid.UUID, *, trigger: Trigger = ...) -> DocumentValidation: ...
+
+
+def run_validate_stage(
+    session: Session, doc: Document, stats: UnitStats, ctx: PipelineContext
+) -> tuple[EventStatus, dict[str, Any]]:
+    """Validate every current extraction; the document ends needs_review or completed.
+
+    The validator commits its own per-extraction transactions; the document
+    status is set here because a document that is still `processing` is not
+    touched by the validator (it only owns finished documents).
+    """
+    if ctx.validator is None:
+        return EventStatus.SKIPPED, {"reason": "no validator configured"}
+    result = ctx.validator.validate_document(doc.id, trigger=Trigger.PIPELINE)
+    doc.status = result.document_status
+    return EventStatus.SUCCEEDED, {
+        "extractions": len(result.outcomes),
+        "document_status": result.document_status.value,
+        "review_statuses": [o.review_status.value for o in result.outcomes],
+        "rules_ms": round(sum(o.duration_ms for o in result.outcomes), 2),
+        **result.counts(),
+    }
+
+
 def not_implemented_stage(step: str) -> StageFn:
     def stub(
         session: Session, doc: Document, stats: UnitStats, ctx: PipelineContext
@@ -422,18 +476,51 @@ def not_implemented_stage(step: str) -> StageFn:
     return stub
 
 
-POST_PARSE_STAGES: list[tuple[Stage, StageFn]] = [
-    (Stage.SEGMENT, run_segment_stage),
-    (Stage.EXTRACT, not_implemented_stage("Step 4")),
-    (Stage.VALIDATE, not_implemented_stage("Step 5")),
+# Order: ingest -> parse -> [PARSE_TAIL_STAGES] -> extract -> [POST_EXTRACT_STAGES].
+# extract runs on its own Celery queue (`llm`) so rate-limit waits never block OCR.
+PARSE_TAIL_STAGES: list[tuple[Stage, StageFn]] = [(Stage.SEGMENT, run_segment_stage)]
+POST_EXTRACT_STAGES: list[tuple[Stage, StageFn]] = [
+    (Stage.VALIDATE, run_validate_stage),
     (Stage.EMBED, not_implemented_stage("Step 7")),
 ]
+
+
+def _run_stages(
+    ctx: PipelineContext,
+    document_id: uuid.UUID,
+    job_id: uuid.UUID,
+    stages: list[tuple[Stage, StageFn]],
+    stats: UnitStats,
+) -> DocumentStatus | None:
+    """Run simple stages in order; FAILED if one raises a PipelineError."""
+    for stage, fn in stages:
+        started = time.perf_counter()
+        try:
+            with ctx.session() as session:
+                doc = session.get_one(Document, document_id)
+                status, details = fn(session, doc, stats, ctx)
+                record_event(
+                    session,
+                    document_id,
+                    job_id,
+                    stage,
+                    status,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                    details=details,
+                )
+        except PipelineError as exc:
+            fail(ctx, document_id, job_id, exc, stage)
+            return DocumentStatus.FAILED
+    return None
 
 
 def finalize(
     ctx: PipelineContext, document_id: uuid.UUID, job_id: uuid.UUID, plan: ParsePlan
 ) -> DocumentStatus:
-    """Apply the partial-failure rules, run post-parse stages, set final status."""
+    """Apply the partial-failure rules and the parse-tail stages (segmentation).
+
+    PROCESSING means "parsed, ready for run_llm_stages"; FAILED is final.
+    """
     with ctx.session() as session:
         doc = session.get_one(Document, document_id)
         if doc.status is DocumentStatus.FAILED:
@@ -457,33 +544,100 @@ def finalize(
     if failure is not None:
         fail(ctx, document_id, job_id, failure, Stage.PARSE)
         return DocumentStatus.FAILED
+    return _run_stages(ctx, document_id, job_id, PARSE_TAIL_STAGES, stats) or DocumentStatus.PROCESSING
 
-    for stage, fn in POST_PARSE_STAGES:
-        started = time.perf_counter()
-        try:
-            with ctx.session() as session:
-                doc = session.get_one(Document, document_id)
-                status, details = fn(session, doc, stats, ctx)
-                record_event(
-                    session,
-                    document_id,
-                    job_id,
-                    stage,
-                    status,
-                    duration_ms=int((time.perf_counter() - started) * 1000),
-                    details=details,
-                )
-        except PipelineError as exc:
-            fail(ctx, document_id, job_id, exc, stage)
-            return DocumentStatus.FAILED
 
+def run_llm_stages(
+    ctx: PipelineContext, document_id: uuid.UUID, job_id: uuid.UUID, *, force: bool = False
+) -> DocumentStatus:
+    """extract -> validate -> embed -> completed (or needs_review, from validation).
+
+    Raises DeferredError (quota spent: the job waits and the document is NOT
+    failed) and TransientError (every model down: the caller retries later).
+    """
     with ctx.session() as session:
         doc = session.get_one(Document, document_id)
         job = session.get_one(ProcessingJob, job_id)
-        doc.status, doc.processing_finished_at = DocumentStatus.COMPLETED, _now()
+        doc.status, doc.error_code, doc.error_message = DocumentStatus.PROCESSING, None, None
+        job.status, job.error_code, job.error_message = JobStatus.RUNNING, None, None
+        stats = _unit_stats(session, document_id)
+    if (status := _extract(ctx, document_id, job_id, force=force)) is not None:
+        return status
+    if (status := _run_stages(ctx, document_id, job_id, POST_EXTRACT_STAGES, stats)) is not None:
+        return status
+    with ctx.session() as session:
+        doc = session.get_one(Document, document_id)
+        job = session.get_one(ProcessingJob, job_id)
+        if doc.status is not DocumentStatus.NEEDS_REVIEW:  # set by the validate stage
+            doc.status = DocumentStatus.COMPLETED
+        doc.processing_finished_at = _now()
         job.status, job.finished_at = JobStatus.SUCCEEDED, _now()
-    log.info("document completed", extra=_log_extra(document_id, job_id, Stage.EMBED))
-    return DocumentStatus.COMPLETED
+        final = doc.status
+    log.info(
+        "document finished", extra={**_log_extra(document_id, job_id, Stage.EMBED), "status": final.value}
+    )
+    return final
+
+
+def _extract(
+    ctx: PipelineContext, document_id: uuid.UUID, job_id: uuid.UUID, *, force: bool
+) -> DocumentStatus | None:
+    """None = continue with the next stages."""
+    if ctx.extractor is None:
+        with ctx.session() as session:
+            record_event(
+                session,
+                document_id,
+                job_id,
+                Stage.EXTRACT,
+                EventStatus.SKIPPED,
+                details={"reason": "no extractor configured"},
+            )
+        return None
+    started = time.perf_counter()
+    try:
+        report = run_extract(ctx.extractor, document_id, job_id, force=force)
+    except DeferredError as exc:
+        defer(ctx, document_id, job_id, exc)
+        raise
+    except PermanentError as exc:
+        fail(ctx, document_id, job_id, exc, Stage.EXTRACT)
+        return DocumentStatus.FAILED
+    events = [*map(segment_event, report.segments)]
+    events.append(summary_event(report, int((time.perf_counter() - started) * 1000)))
+    with ctx.session() as session:
+        for event in events:
+            record_event(
+                session,
+                document_id,
+                job_id,
+                Stage.EXTRACT,
+                event.status,
+                duration_ms=event.duration_ms,
+                details=event.details,
+            )
+    return None
+
+
+def defer(ctx: PipelineContext, document_id: uuid.UUID, job_id: uuid.UUID, error: DeferredError) -> None:
+    """Park the job until the quota resets: queued + LLM_QUOTA_DEFERRED, never failed."""
+    with ctx.session() as session:
+        doc = session.get_one(Document, document_id)
+        job = session.get_one(ProcessingJob, job_id)
+        doc.status, doc.error_code, doc.error_message = DocumentStatus.QUEUED, error.code, error.message
+        job.status, job.error_code, job.error_message = JobStatus.QUEUED, error.code, error.message
+        record_event(
+            session,
+            document_id,
+            job_id,
+            Stage.EXTRACT,
+            EventStatus.SKIPPED,
+            details={"deferred_until": error.resume_at.isoformat(), "code": error.code.value},
+        )
+    log.warning(
+        "extraction deferred",
+        extra={**_log_extra(document_id, job_id, Stage.EXTRACT), "resume_at": error.resume_at.isoformat()},
+    )
 
 
 def fail(
@@ -519,7 +673,11 @@ def fail(
 
 
 def run_document(ctx: PipelineContext, document_id: uuid.UUID, job_id: uuid.UUID) -> DocumentStatus:
-    """Run the whole pipeline inline (CLI --sync, tests). Same code as the Celery path."""
+    """Run the whole pipeline inline (CLI --sync, tests). Same code as the Celery path.
+
+    There is no scheduler here: a deferral returns QUEUED (the job waits for a
+    worker or a re-run) and an unavailable LLM fails the run.
+    """
     plan = begin(ctx, document_id, job_id)
     if plan is None:
         return DocumentStatus.FAILED
@@ -529,19 +687,30 @@ def run_document(ctx: PipelineContext, document_id: uuid.UUID, job_id: uuid.UUID
         except PermanentError as exc:
             fail(ctx, document_id, job_id, exc, Stage.PARSE)
             return DocumentStatus.FAILED
-    return finalize(ctx, document_id, job_id, plan)
+    if (status := finalize(ctx, document_id, job_id, plan)) is not DocumentStatus.PROCESSING:
+        return status
+    try:
+        return run_llm_stages(ctx, document_id, job_id)
+    except DeferredError:
+        return DocumentStatus.QUEUED
+    except TransientError as exc:
+        fail(ctx, document_id, job_id, exc, Stage.EXTRACT)
+        return DocumentStatus.FAILED
 
 
 __all__ = [
-    "POST_PARSE_STAGES",
+    "PARSE_TAIL_STAGES",
+    "POST_EXTRACT_STAGES",
     "ParsePlan",
     "PipelineContext",
     "begin",
     "default_context",
+    "defer",
     "fail",
     "finalize",
     "parse_batch",
     "record_event",
     "run_document",
+    "run_llm_stages",
     "upsert_units",
 ]

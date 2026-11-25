@@ -1,0 +1,5 @@
+$scope
+
+<document>
+$document
+</document>

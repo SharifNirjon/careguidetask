@@ -13,16 +13,19 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Final, Literal
 
-from pydantic import Field
+from pydantic import BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Dimension of the sentence-embedding model (all-MiniLM-L6-v2 -> 384).
+# Stored embedding dimension. Models with a larger native dimension are
+# requested at (or truncated to) this size and L2-normalized; 1024 keeps the
+# pgvector HNSW index well under its 2000-dim limit.
 # Changing this value requires: a new Alembic migration that alters
 # chunks.embedding to VECTOR(<new dim>) (dropping/recreating the HNSW index),
 # and a full re-embed of every chunk. tests/db/test_migrations.py fails if the
 # database and this constant disagree.
-EMBEDDING_DIM: Final[int] = 384
-EMBEDDING_MODEL_DEFAULT: Final[str] = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_DIM: Final[int] = 1024
+EMBEDDING_MODEL_DEFAULT: Final[str] = "nvidia/nemotron-3.5-embed-8b:free"
+EMBEDDING_SPACE_DEFAULT: Final[str] = "nemotron-8b"
 
 
 def normalize_db_url(url: str) -> str:
@@ -118,6 +121,10 @@ class PipelineSettings(BaseSettings):
     task_max_retries: int = Field(3, ge=0)
     task_retry_backoff_max_s: int = Field(300, gt=0)
     worker_max_tasks_per_child: int = Field(100, gt=0)  # recycle processes: caps leaks
+    # Quota deferrals schedule a task ~24 h ahead; with acks_late the Redis
+    # visibility timeout must exceed that or the task is redelivered early.
+    broker_visibility_timeout_s: int = Field(25 * 3600, gt=0)
+    llm_defer_jitter_s: int = Field(900, ge=0)  # spread deferred jobs after the reset
 
     @property
     def max_file_size_bytes(self) -> int:
@@ -127,3 +134,179 @@ class PipelineSettings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_pipeline_settings() -> PipelineSettings:
     return PipelineSettings()
+
+
+class EmbeddingModelConfig(BaseModel):
+    """One embedding model and the vector space its outputs live in.
+
+    Two models share a space ONLY if their vectors are directly comparable
+    (same weights). Different models are different spaces, even at equal dims.
+    """
+
+    model: str
+    space: str
+
+
+class LLMSettings(BaseSettings):
+    """OpenRouter gateway configuration. The API key is read from the environment only."""
+
+    model_config = SettingsConfigDict(env_prefix="", case_sensitive=False, extra="ignore")
+
+    openrouter_api_key: SecretStr = SecretStr("")
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    redis_url: str = "redis://localhost:6379/0"
+
+    # --- chat ---
+    llm_primary_model: str = "nvidia/nemotron-3-ultra-550b-a55b:free"
+    llm_fallback_models: list[str] = Field(default_factory=list)
+    llm_reasoning_effort: str = "low"  # mapped to the nearest effort the model supports
+    llm_max_tokens: int = Field(16_000, gt=0)  # generous: reasoning shares this budget
+    llm_connect_timeout_s: float = Field(10.0, gt=0)
+    llm_read_timeout_s: float = Field(240.0, gt=0)  # reasoning models are slow
+
+    # --- embeddings ---
+    embedding_models: list[EmbeddingModelConfig] = Field(
+        default_factory=lambda: [
+            EmbeddingModelConfig(model="nvidia/nemotron-3.5-embed-8b:free", space="nemotron-3.5-8b"),
+            EmbeddingModelConfig(model="nvidia/nemotron-3-embed-1b:free", space="nemotron-3-1b"),
+            EmbeddingModelConfig(model="nvidia/nemotron-3.5-embed-1b:free", space="nemotron-3.5-1b"),
+        ]
+    )
+    embed_batch_size: int = Field(32, gt=0)
+    embed_chars_per_token: float = Field(2.5, gt=0)  # conservative: caps inputs below the model limit
+    embed_input_type_query: str = "search_query"
+    embed_input_type_document: str = "search_document"
+
+    # --- retries / fallback ---
+    llm_max_attempts: int = Field(3, gt=0)  # per model, for 5xx / timeouts / connection errors
+    llm_backoff_base_s: float = Field(2.0, gt=0)
+    llm_backoff_max_s: float = Field(30.0, gt=0)
+    llm_max_retry_after_s: float = Field(90.0, gt=0)  # longer waits -> try the next model instead
+    circuit_failure_threshold: int = Field(3, gt=0)
+    circuit_open_s: float = Field(300.0, gt=0)
+
+    # --- free-tier budget (shared by every :free model, embeddings included) ---
+    free_model_rpm: int = Field(18, gt=0)  # headroom under OpenRouter's 20/min
+    free_model_daily_limit: int = Field(50, gt=0)  # 50 or 1000 depending on credits; resynced
+    quota_resync_s: float = Field(300.0, gt=0)
+    rate_window_s: float = Field(60.0, gt=0)
+
+    # --- cache / catalog ---
+    llm_cache_ttl_s: int = Field(7 * 24 * 3600, gt=0)
+    model_catalog_ttl_s: int = Field(24 * 3600, gt=0)
+
+    @property
+    def chat_models(self) -> list[str]:
+        return [self.llm_primary_model, *self.llm_fallback_models]
+
+
+class ExtractionSettings(BaseSettings):
+    """Extraction behaviour: prompt budget, grounding and confidence fusion."""
+
+    model_config = SettingsConfigDict(env_prefix="", case_sensitive=False, extra="ignore")
+
+    max_prompt_chars: int = Field(60_000, gt=0)  # ~15-20k tokens of document text
+    grounding_min_score: float = Field(0.85, ge=0, le=1)  # tolerates light OCR noise
+    ambiguous_parse_confidence_factor: float = Field(0.5, ge=0, le=1)  # e.g. "1,234" or 03/04/2024
+    field_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "invoice_number": 0.25,
+            "invoice_date": 0.15,
+            "supplier_name": 0.20,
+            "total": 0.30,
+            "currency": 0.10,
+        }
+    )
+
+
+@lru_cache(maxsize=1)
+def get_llm_settings() -> LLMSettings:
+    return LLMSettings()
+
+
+@lru_cache(maxsize=1)
+def get_extraction_settings() -> ExtractionSettings:
+    return ExtractionSettings()
+
+
+class ValidationSettings(BaseSettings):
+    """Rule thresholds, required fields, review policy. All overridable via env (JSON for dicts/lists)."""
+
+    model_config = SettingsConfigDict(env_prefix="", case_sensitive=False, extra="ignore")
+
+    # --- money ---
+    validation_rel_tol: float = Field(0.005, ge=0, le=1)  # 0.5% of the larger amount
+
+    # --- trust ---
+    field_confidence_min: float = Field(0.6, ge=0, le=1)
+    overall_confidence_min: float = Field(0.7, ge=0, le=1)
+
+    # --- plausibility ---
+    max_tax_rate: float = Field(0.5, ge=0)
+    future_date_grace_days: int = Field(7, ge=0)  # issue date vs "today" across time zones/back-office lag
+    max_invoice_age_years: int = Field(5, gt=0)
+    invoice_number_min_len: int = Field(2, gt=0)
+    invoice_number_max_len: int = Field(40, gt=0)
+
+    # --- duplicates / cross-document ---
+    supplier_match_min: float = Field(0.8, ge=0, le=1)  # pg_trgm similarity on supplier_name_norm
+    duplicate_date_window_days: int = Field(3, ge=0)
+
+    # --- required fields per document_type: field -> severity ---
+    required_fields: dict[str, dict[str, str]] = Field(
+        default_factory=lambda: {
+            "invoice": {
+                "invoice_number": "error",
+                "invoice_date": "error",
+                "supplier_name": "error",
+                "total": "error",
+                "currency": "error",
+                "customer_name": "warning",
+                "subtotal": "warning",
+                "tax": "warning",
+            },
+            "credit_note": {
+                "invoice_number": "error",
+                "invoice_date": "error",
+                "supplier_name": "error",
+                "total": "error",
+                "currency": "error",
+                "customer_name": "warning",
+                "subtotal": "warning",
+                "tax": "warning",
+            },
+            "receipt": {
+                "invoice_date": "error",
+                "supplier_name": "error",
+                "total": "error",
+                "currency": "error",
+                "invoice_number": "warning",
+                "customer_name": "warning",
+            },
+            "statement": {
+                "invoice_date": "error",
+                "supplier_name": "error",
+                "total": "error",
+                "currency": "error",
+                "invoice_number": "warning",
+            },
+            "other": {},
+        }
+    )
+    # Fields whose UNGROUNDED_VALUE is an error (others: warning).
+    ungrounded_error_fields: list[str] = Field(default_factory=lambda: ["invoice_number", "total"])
+
+    # --- rule registry ---
+    disabled_rules: list[str] = Field(default_factory=list)
+    severity_overrides: dict[str, str] = Field(default_factory=dict)
+
+    # --- review policy ---
+    auto_approve_min: float = Field(0.85, ge=0, le=1)
+    blocking_warnings: list[str] = Field(
+        default_factory=lambda: ["UNGROUNDED_VALUE", "LOW_CONFIDENCE", "POSSIBLE_DUPLICATE"]
+    )
+
+
+@lru_cache(maxsize=1)
+def get_validation_settings() -> ValidationSettings:
+    return ValidationSettings()

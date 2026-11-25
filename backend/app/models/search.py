@@ -30,15 +30,14 @@ class Chunk(Base):
     stemming produces false matches; the cost is that "invoices" won't match
     "invoice" (semantic search covers that gap in hybrid search).
 
-    Only compare embeddings produced by the same embedding_model: filter on it.
+    Only compare embeddings from the same embedding_space: vectors from different
+    models live in different spaces even at equal dimension. Filter on it.
     """
 
     __tablename__ = "chunks"
 
     id: Mapped[uuid.UUID] = uuid_pk()
-    document_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("documents.id", ondelete="CASCADE")
-    )
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
     unit_id: Mapped[uuid.UUID]
     extraction_id: Mapped[uuid.UUID | None]
     chunk_index: Mapped[int] = mapped_column(Integer)
@@ -47,6 +46,8 @@ class Chunk(Base):
     # NULL until the embed stage runs.
     embedding: Mapped[Any | None] = mapped_column(Vector(EMBEDDING_DIM))
     embedding_model: Mapped[str | None]
+    # Which vector space the embedding lives in (see app.config.EmbeddingModelConfig).
+    embedding_space: Mapped[str | None]
     tsv: Mapped[Any] = mapped_column(
         TSVECTOR, Computed("to_tsvector('simple'::regconfig, content)", persisted=True)
     )
@@ -78,7 +79,6 @@ class Chunk(Base):
         ),
         CheckConstraint("chunk_index >= 0", name="chunk_index_nonneg"),
         CheckConstraint("token_count >= 0", name="token_count_nonneg"),
-        CheckConstraint(
-            "(embedding IS NULL) = (embedding_model IS NULL)", name="embedding_has_model"
-        ),
+        CheckConstraint("(embedding IS NULL) = (embedding_model IS NULL)", name="embedding_has_model"),
+        CheckConstraint("(embedding IS NULL) = (embedding_space IS NULL)", name="embedding_has_space"),
     )

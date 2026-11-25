@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -18,7 +19,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import (
@@ -38,6 +39,7 @@ from app.models.enums import (
     ReconciliationStatus,
     ReviewStatus,
     RuleCode,
+    RunStatus,
     Severity,
 )
 
@@ -56,9 +58,7 @@ class Extraction(Base):
     __tablename__ = "extractions"
 
     id: Mapped[uuid.UUID] = uuid_pk()
-    document_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("documents.id", ondelete="CASCADE")
-    )
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
     invoice_index: Mapped[int] = mapped_column(Integer)
     unit_start: Mapped[int] = mapped_column(Integer)
     unit_end: Mapped[int] = mapped_column(Integer)
@@ -94,6 +94,10 @@ class Extraction(Base):
     reviewed_at: Mapped[datetime | None]
     # Optimistic lock: every ORM UPDATE adds "AND lock_version = :old" and bumps it.
     lock_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # The job that produced this version: makes a retried job idempotent.
+    processing_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("processing_jobs.id", ondelete="SET NULL"), index=True
+    )
     created_at: Mapped[datetime] = created_at_col()
     updated_at: Mapped[datetime] = updated_at_col()
 
@@ -160,9 +164,7 @@ class LineItem(Base):
     __tablename__ = "line_items"
 
     id: Mapped[uuid.UUID] = uuid_pk()
-    extraction_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("extractions.id", ondelete="CASCADE")
-    )
+    extraction_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("extractions.id", ondelete="CASCADE"))
     position: Mapped[int] = mapped_column(Integer)
     description: Mapped[str | None]
     quantity: Mapped[Decimal | None] = mapped_column(Money)
@@ -176,6 +178,24 @@ class LineItem(Base):
     __table_args__ = (
         UniqueConstraint("extraction_id", "position"),  # also the FK index
         CheckConstraint("position >= 0", name="position_nonneg"),
+    )
+
+
+def issue_fingerprint(rule_code: str, field_path: str | None, related_extraction_id: object) -> str:
+    """Identity of an issue across re-validations of ONE extraction.
+
+    Must stay byte-for-byte identical to the SQL backfill in migration 0004:
+    sha256(rule_code || '|' || coalesce(field_path, '') || '|' || coalesce(related::text, '')).
+    """
+    related = "" if related_extraction_id is None else str(related_extraction_id)
+    body = f"{rule_code}|{field_path or ''}|{related}"
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _fingerprint_default(context: Any) -> str:
+    params = context.get_current_parameters()
+    return issue_fingerprint(
+        str(params["rule_code"]), params.get("field_path"), params.get("related_extraction_id")
     )
 
 
@@ -201,14 +221,15 @@ class ValidationIssue(Base):
     resolved_by: Mapped[str | None]
     resolution_note: Mapped[str | None]
     superseded_at: Mapped[datetime | None]
+    # sha256(rule_code, field_path, related_extraction_id): lets re-validation keep
+    # an unchanged issue (and its resolution) instead of re-creating it.
+    fingerprint: Mapped[str] = mapped_column(default=_fingerprint_default)
     created_at: Mapped[datetime] = created_at_col()
 
     extraction: Mapped[Extraction] = relationship(
         back_populates="validation_issues", foreign_keys=[extraction_id]
     )
-    related_extraction: Mapped[Extraction | None] = relationship(
-        foreign_keys=[related_extraction_id]
-    )
+    related_extraction: Mapped[Extraction | None] = relationship(foreign_keys=[related_extraction_id])
 
     __table_args__ = (
         # Fast "open issues for this extraction". The full extraction_id index
@@ -220,9 +241,15 @@ class ValidationIssue(Base):
             postgresql_where=text("superseded_at IS NULL"),
         ),
         Index("ix_validation_issues_rule_code_severity", "rule_code", "severity"),
-        CheckConstraint(
-            "related_extraction_id <> extraction_id", name="related_not_self"
+        # One ACTIVE issue per fingerprint: the backstop for concurrent re-validation.
+        Index(
+            "uq_validation_issues_extraction_id_fingerprint_active",
+            "extraction_id",
+            "fingerprint",
+            unique=True,
+            postgresql_where=text("superseded_at IS NULL"),
         ),
+        CheckConstraint("related_extraction_id <> extraction_id", name="related_not_self"),
         enum_check("rule_code", RuleCode),
         enum_check("severity", Severity),
     )
@@ -265,9 +292,7 @@ class Reconciliation(Base):
     __tablename__ = "reconciliations"
 
     id: Mapped[uuid.UUID] = uuid_pk()
-    left_extraction_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("extractions.id", ondelete="CASCADE")
-    )
+    left_extraction_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("extractions.id", ondelete="CASCADE"))
     right_extraction_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("extractions.id", ondelete="CASCADE"), index=True
     )
@@ -276,6 +301,11 @@ class Reconciliation(Base):
     status: Mapped[ReconciliationStatus] = mapped_column(StrEnumText(ReconciliationStatus))
     # [{"field": "total", "left": "100.0000", "right": "110.0000"}, ...]
     differences: Mapped[list[Any]] = mapped_column(server_default=text("'[]'::jsonb"))
+    # Last batch run that compared this pair (a pair has one row; each run's full
+    # report lives in reconciliation_runs.summary).
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("reconciliation_runs.id", ondelete="SET NULL"), index=True
+    )
     created_at: Mapped[datetime] = created_at_col()
 
     left_extraction: Mapped[Extraction] = relationship(foreign_keys=[left_extraction_id])
@@ -283,9 +313,7 @@ class Reconciliation(Base):
 
     __table_args__ = (
         UniqueConstraint("left_extraction_id", "right_extraction_id"),  # also left FK index
-        CheckConstraint(
-            "left_extraction_id < right_extraction_id", name="canonical_pair_order"
-        ),
+        CheckConstraint("left_extraction_id < right_extraction_id", name="canonical_pair_order"),
         enum_check("match_method", MatchMethod),
         enum_check("status", ReconciliationStatus),
     )
@@ -307,3 +335,21 @@ class Reconciliation(Base):
             a, b = b, a
             diffs = [{**d, "left": d.get("right"), "right": d.get("left")} for d in diffs]
         return cls(left_extraction_id=a, right_extraction_id=b, differences=diffs, **kw)
+
+
+class ReconciliationRun(Base):
+    """A user-requested batch check: one set of documents against another
+    (PDFs vs an Excel ledger, or PDFs vs PDFs). The report is in `summary`."""
+
+    __tablename__ = "reconciliation_runs"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    left_document_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)))
+    right_document_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)))
+    status: Mapped[RunStatus] = mapped_column(StrEnumText(RunStatus), server_default=RunStatus.RUNNING.value)
+    summary: Mapped[dict[str, Any]] = mapped_column(server_default=text("'{}'::jsonb"))
+    created_by: Mapped[str | None]
+    created_at: Mapped[datetime] = created_at_col()
+    finished_at: Mapped[datetime | None]
+
+    __table_args__ = (enum_check("status", RunStatus),)
