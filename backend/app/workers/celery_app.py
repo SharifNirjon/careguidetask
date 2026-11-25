@@ -10,11 +10,11 @@ in production so a burst of scans cannot starve spreadsheet processing.
 from __future__ import annotations
 
 from celery import Celery
-from celery.signals import worker_process_init
+from celery.signals import task_postrun, task_prerun, worker_process_init
 
-from app.config import get_pipeline_settings
+from app.config import get_api_settings, get_pipeline_settings
 from app.db.session import dispose_engine_after_fork
-from app.logging_setup import configure_logging
+from app.logging_setup import bind_request_id, configure_logging
 
 QUEUE_DEFAULT = "default"
 QUEUE_OCR = "ocr"
@@ -42,6 +42,10 @@ celery_app.conf.update(
     # redelivers any task not acked within the visibility timeout, so it must
     # exceed the longest eta. Trade-off: a task on a crashed HOST waits this long.
     broker_transport_options={"visibility_timeout": _settings.broker_visibility_timeout_s},
+    # `celery -A app.workers.celery_app beat`: run exactly ONE beat process.
+    beat_schedule={
+        "sweep-stale-jobs": {"task": "ops.sweep", "schedule": float(get_api_settings().sweeper_interval_s)},
+    },
 )
 
 
@@ -49,3 +53,15 @@ celery_app.conf.update(
 def _init_worker_process(**_: object) -> None:
     configure_logging()
     dispose_engine_after_fork()  # never share pooled DB sockets across forks
+
+
+@task_prerun.connect
+def _bind_request_id(task: object = None, **_: object) -> None:
+    """Restore the API request id sent as a task header, so worker logs carry it."""
+    request = getattr(task, "request", None)
+    bind_request_id(getattr(request, "request_id", None))
+
+
+@task_postrun.connect
+def _clear_request_id(**_: object) -> None:
+    bind_request_id(None)

@@ -1,0 +1,126 @@
+# Ready-to-run requests (VS Code REST Client / JetBrains HTTP client).
+# Create a key first:  docker compose exec api python -m app.cli api-key create --name demo --role admin
+@base = http://localhost:8000
+@key = cg_REPLACE_ME
+@document = 00000000-0000-4000-8000-000000000000
+@extraction = 00000000-0000-4000-8000-000000000000
+@issue = 00000000-0000-4000-8000-000000000000
+@run = 00000000-0000-4000-8000-000000000000
+
+### Liveness / readiness (no auth)
+GET {{base}}/health/live
+
+###
+GET {{base}}/health/ready
+
+### Upload (multipart; replay-safe with Idempotency-Key)
+POST {{base}}/api/v1/documents
+Authorization: Bearer {{key}}
+Idempotency-Key: demo-upload-0001
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="files"; filename="invoice.pdf"
+Content-Type: application/pdf
+
+< ../tests/fixtures/generated/digital_invoice.pdf
+--boundary
+Content-Disposition: form-data; name="files"; filename="ledger.xlsx"
+Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+< ../tests/fixtures/generated/invoices.xlsx
+--boundary--
+
+### List: needs review, from one supplier, highest total first
+GET {{base}}/api/v1/documents?status=needs_review&supplier=acme&sort=total&order=desc&limit=25
+Authorization: Bearer {{key}}
+
+### Detail + progress (send the ETag back as If-None-Match to get 304)
+GET {{base}}/api/v1/documents/{{document}}
+Authorization: Bearer {{key}}
+
+### Processing history
+GET {{base}}/api/v1/documents/{{document}}/events?limit=50
+Authorization: Bearer {{key}}
+
+### Results: fields with evidence, line items, issues, reconciliations
+GET {{base}}/api/v1/documents/{{document}}/results
+Authorization: Bearer {{key}}
+
+### Original file
+GET {{base}}/api/v1/documents/{{document}}/file
+Authorization: Bearer {{key}}
+
+### Page preview
+GET {{base}}/api/v1/documents/{{document}}/units/0/image?dpi=110
+Authorization: Bearer {{key}}
+
+### Correct fields (If-Match = lock_version from the extraction)
+PATCH {{base}}/api/v1/extractions/{{extraction}}
+Authorization: Bearer {{key}}
+If-Match: 1
+Content-Type: application/json
+
+{"fields": {"total": "270.00", "invoice_date": "2024-03-05"}, "reason": "OCR misread"}
+
+### Correction history
+GET {{base}}/api/v1/extractions/{{extraction}}/corrections
+Authorization: Bearer {{key}}
+
+### Resolve an issue
+POST {{base}}/api/v1/issues/{{issue}}/resolve
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"note": "Checked against the paper original"}
+
+### Approve (409 while unresolved errors remain)
+POST {{base}}/api/v1/extractions/{{extraction}}/approve
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"note": "Looks right"}
+
+### Reject (note required)
+POST {{base}}/api/v1/extractions/{{extraction}}/reject
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"note": "Not one of our suppliers"}
+
+### Reprocess from the LLM stage
+POST {{base}}/api/v1/documents/{{document}}/reprocess
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"from_stage": "extract", "force": false}
+
+### Bulk reprocess failed documents (admin)
+POST {{base}}/api/v1/jobs/reprocess-failed
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"error_codes": ["LLM_ERROR", "WORKER_TIMEOUT"], "limit": 100}
+
+### Batch reconciliation: PDFs vs a ledger
+POST {{base}}/api/v1/reconciliations
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"left_document_ids": ["{{document}}"], "right_document_ids": ["{{document}}"]}
+
+###
+GET {{base}}/api/v1/reconciliations/{{run}}
+Authorization: Bearer {{key}}
+
+### Keyword search with filters
+GET {{base}}/api/v1/search?q=INV-2024&has_open_issues=true
+Authorization: Bearer {{key}}
+
+### Stats (admin)
+GET {{base}}/api/v1/stats
+Authorization: Bearer {{key}}
+
+### Delete (admin, soft)
+DELETE {{base}}/api/v1/documents/{{document}}
+Authorization: Bearer {{key}}

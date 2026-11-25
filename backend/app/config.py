@@ -310,3 +310,49 @@ class ValidationSettings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_validation_settings() -> ValidationSettings:
     return ValidationSettings()
+
+
+class ApiSettings(BaseSettings):
+    """REST API limits, security toggles and ops knobs (all env-overridable)."""
+
+    model_config = SettingsConfigDict(env_prefix="", case_sensitive=False, extra="ignore")
+
+    environment: Literal["dev", "test", "prod"] = "dev"
+    docs_enabled: bool = True  # /docs + /openapi.json; set false in production
+    cors_origins: list[str] = Field(default_factory=list)  # explicit allowlist, never "*"
+    redis_url: str = "redis://localhost:6379/0"
+
+    # --- uploads ---
+    max_files_per_upload: int = Field(20, gt=0)
+    max_request_size_mb: int = Field(200, gt=0)  # also enforce at the reverse proxy
+    idempotency_ttl_s: int = Field(24 * 3600, gt=0)
+
+    # --- rate limits per API key (requests/minute) ---
+    upload_rpm: int = Field(30, gt=0)
+    write_rpm: int = Field(120, gt=0)
+    read_rpm: int = Field(600, gt=0)
+    rate_window_s: float = Field(60.0, gt=0)
+
+    # --- pagination / previews / search ---
+    page_size_default: int = Field(25, gt=0)
+    page_size_max: int = Field(100, gt=0)
+    preview_dpi_default: int = Field(110, gt=0)
+    preview_dpi_min: int = Field(50, gt=0)
+    preview_dpi_max: int = Field(200, gt=0)
+    search_query_max_chars: int = Field(500, gt=0)
+    search_min_similarity: float = Field(0.3, ge=0, le=1)
+    bulk_reprocess_max: int = Field(500, gt=0)
+
+    # --- sweeper ---
+    sweeper_interval_s: int = Field(300, gt=0)
+    stale_queued_minutes: int = Field(15, gt=0)
+    job_max_runtime_minutes: int = Field(120, gt=0)  # longer than any healthy whole-document run
+
+    @property
+    def max_request_size_bytes(self) -> int:
+        return self.max_request_size_mb * 1024 * 1024
+
+
+@lru_cache(maxsize=1)
+def get_api_settings() -> ApiSettings:
+    return ApiSettings()

@@ -3,6 +3,8 @@
     python -m app.cli ingest <path-or-folder> [--sync] [--uploaded-by NAME]
     python -m app.cli llm-check [--probe]
     python -m app.cli extract <document_id> [--force]
+    python -m app.cli api-key create --name NAME --role viewer|reviewer|admin
+    python -m app.cli api-key revoke <key-or-prefix>
 
 Without --sync the documents are enqueued to Celery; with --sync the whole
 pipeline runs inline and a summary table is printed.
@@ -25,7 +27,7 @@ from sqlalchemy import select
 
 from app import cli_llm
 from app.logging_setup import configure_logging
-from app.models import Document, DocumentUnit
+from app.models import ApiRole, Document, DocumentUnit
 from app.pipeline import orchestrator
 from app.pipeline.errors import PermanentError
 from app.pipeline.intake import ingest_file
@@ -136,6 +138,26 @@ def print_table(rows: Sequence[Row]) -> None:
     print_rows(COLUMNS, [[str(getattr(r, c)) for c in COLUMNS] for r in rows])
 
 
+def api_key_command(action: str, *, name: str | None, role: str | None, key: str | None) -> int:
+    """The new key is printed ONCE (stdout only); only its hash is stored."""
+    from app.api.services.auth import AuthService
+    from app.db.session import get_sessionmaker
+
+    with get_sessionmaker()() as session:
+        service = AuthService(session)
+        if action == "create":
+            generated = service.create_key(name or "unnamed", ApiRole(role or ApiRole.VIEWER.value))
+            print(f"prefix: {generated.prefix}")
+            print(f"key:    {generated.key}")
+            print("Store the key now: it cannot be shown again.")
+            return 0
+        if service.revoke_key(key or ""):
+            print("revoked")
+            return 0
+    print("no active key with that prefix", file=sys.stderr)
+    return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -148,11 +170,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     extract = sub.add_parser("extract", help="(re-)extract one document and show every field")
     extract.add_argument("document_id", type=uuid.UUID)
     extract.add_argument("--force", action="store_true", help="bypass the LLM response cache")
+    keys = sub.add_parser("api-key", help="create or revoke API keys")
+    key_sub = keys.add_subparsers(dest="action", required=True)
+    create = key_sub.add_parser("create")
+    create.add_argument("--name", required=True)
+    create.add_argument("--role", required=True, choices=[r.value for r in ApiRole])
+    revoke = key_sub.add_parser("revoke")
+    revoke.add_argument("key", help="the key or its prefix (cg_xxxxxxxx)")
     args = parser.parse_args(argv)
 
     configure_logging(logging.WARNING)  # keep the tables readable; JSON logs go to stderr
     if args.command == "llm-check":
         return cli_llm.llm_check(probe=args.probe, print_rows=print_rows)
+    if args.command == "api-key":
+        return api_key_command(
+            args.action,
+            name=getattr(args, "name", None),
+            role=getattr(args, "role", None),
+            key=getattr(args, "key", None),
+        )
     if args.command == "extract":
         return cli_llm.extract(args.document_id, force=args.force, print_rows=print_rows)
     if not args.path.exists():

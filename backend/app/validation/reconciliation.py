@@ -176,14 +176,14 @@ class ReconciliationService:
         self._session_factory = session_factory
         self._settings = settings
 
-    def run(
+    def create_run(
         self,
         left_document_ids: Sequence[uuid.UUID],
         right_document_ids: Sequence[uuid.UUID],
         actor: str | None,
-    ) -> tuple[uuid.UUID, BatchReport]:
-        """Create the run row first (so a crash leaves a visible 'failed' run), then
-        match, upsert the pair rows with run_id, and store the report."""
+    ) -> uuid.UUID:
+        """Record the request first: the caller gets a run id at once (202), and a
+        crash later still leaves a visible run."""
         with self._session() as session:
             run = ReconciliationRun(
                 left_document_ids=list(left_document_ids),
@@ -192,26 +192,39 @@ class ReconciliationService:
             )
             session.add(run)
             session.flush()
-            run_id = run.id
+            return run.id
+
+    def execute(self, run_id: uuid.UUID) -> BatchReport:
+        """Match, upsert the pair rows with run_id, store the report (or 'failed')."""
         try:
             with self._session() as session:
+                run = session.get_one(ReconciliationRun, run_id)
                 repo = ValidationRepository(session)
-                left = [Entry(s, d) for s, d in repo.current_entries(left_document_ids)]
-                right = [Entry(s, d) for s, d in repo.current_entries(right_document_ids)]
+                left = [Entry(s, d) for s, d in repo.current_entries(run.left_document_ids)]
+                right = [Entry(s, d) for s, d in repo.current_entries(run.right_document_ids)]
                 report = match_sets(left, right, self._settings)
                 for pair in [*report.matched, *report.mismatched]:
                     other = Candidate(pair.right.extraction, pair.right.document, pair.similarity, pair.kind)
                     repo.upsert_reconciliation(pair.left.extraction, other, pair.comparison, run_id=run_id)
-                finished = session.get_one(ReconciliationRun, run_id)
-                finished.summary = report.summary()
-                finished.status, finished.finished_at = RunStatus.SUCCEEDED, datetime.now(UTC)
+                run.summary = report.summary()
+                run.status, run.finished_at = RunStatus.SUCCEEDED, datetime.now(UTC)
         except Exception as exc:
             with self._session() as session:
                 failed = session.get_one(ReconciliationRun, run_id)
                 failed.status, failed.finished_at = RunStatus.FAILED, datetime.now(UTC)
                 failed.summary = {"error": type(exc).__name__}
             raise
-        return run_id, report
+        return report
+
+    def run(
+        self,
+        left_document_ids: Sequence[uuid.UUID],
+        right_document_ids: Sequence[uuid.UUID],
+        actor: str | None,
+    ) -> tuple[uuid.UUID, BatchReport]:
+        """create_run + execute, inline."""
+        run_id = self.create_run(left_document_ids, right_document_ids, actor)
+        return run_id, self.execute(run_id)
 
     @contextmanager
     def _session(self) -> Iterator[Session]:

@@ -56,6 +56,14 @@ class ProcessingJob(Base):
 
     __table_args__ = (
         UniqueConstraint("id", "document_id"),  # target for events' composite FK
+        # At most one queued/running job per document: concurrent reprocess requests
+        # can't both win (the API maps the violation to 409).
+        Index(
+            "uq_processing_jobs_document_id_active",
+            "document_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
         CheckConstraint("attempt >= 1", name="attempt_positive"),
         CheckConstraint("finished_at >= started_at", name="run_window"),
         enum_check("job_type", JobType),

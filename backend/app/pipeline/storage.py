@@ -20,12 +20,15 @@ from app.pipeline.errors import TransientError
 
 _KEY_RE = re.compile(r"^[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{32}$")
 _COPY_CHUNK = 1024 * 1024
+DERIVED_NAMESPACE = uuid.UUID("6f1c2d3e-4a5b-4c6d-8e7f-90a1b2c3d4e5")
 
 
 class Storage(Protocol):
-    def put(self, stream: BinaryIO) -> str:
-        """Store the stream's bytes; return a new opaque key."""
+    def put(self, stream: BinaryIO, *, key: str | None = None) -> str:
+        """Store the stream's bytes; return the key (a new random one unless given)."""
         ...
+
+    def exists(self, key: str) -> bool: ...
 
     def open(self, key: str) -> BinaryIO:
         """Open a stored blob for binary reading (caller closes)."""
@@ -46,6 +49,13 @@ def new_key() -> str:
     return f"{hex_[:2]}/{hex_[2:4]}/{hex_}"
 
 
+def derived_key(*parts: str) -> str:
+    """Deterministic key for derived blobs (e.g. cached page previews): a UUID5 of
+    the parts, so it has the same shape as every other key."""
+    hex_ = uuid.uuid5(DERIVED_NAMESPACE, "|".join(parts)).hex
+    return f"{hex_[:2]}/{hex_[2:4]}/{hex_}"
+
+
 def validate_key(key: str) -> str:
     if not _KEY_RE.fullmatch(key):
         raise ValueError(f"invalid storage key: {key!r}")
@@ -61,8 +71,8 @@ class LocalStorage:
     def _path(self, key: str) -> Path:
         return self.root / validate_key(key)
 
-    def put(self, stream: BinaryIO) -> str:
-        key = new_key()
+    def put(self, stream: BinaryIO, *, key: str | None = None) -> str:
+        key = key or new_key()
         final = self._path(key)
         tmp = final.with_suffix(".partial")
         try:
@@ -97,6 +107,9 @@ class LocalStorage:
         # Already on local disk: no copy needed. A remote backend (S3) would
         # download to a temp file here and delete it on exit.
         yield path
+
+    def exists(self, key: str) -> bool:
+        return self._path(key).is_file()
 
     def delete(self, key: str) -> None:
         self._path(key).unlink(missing_ok=True)

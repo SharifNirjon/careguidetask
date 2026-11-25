@@ -15,11 +15,11 @@ repos:
         language: system
         types: [python]
       - id: mypy
-        name: mypy (strict for app.llm, app.extraction, app.validation)
-        entry: mypy backend/app/llm backend/app/extraction backend/app/validation
+        name: mypy (strict for app.llm, app.extraction, app.validation, app.api)
+        entry: mypy backend/app/llm backend/app/extraction backend/app/validation backend/app/api
         language: system
         pass_filenames: false
-        files: ^backend/app/(llm|extraction|validation|config\.py)
+        files: ^backend/app/(llm|extraction|validation|api|config\.py)
       - id: detect-secrets
         name: detect-secrets
         entry: detect-secrets-hook --baseline .secrets.baseline

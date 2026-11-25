@@ -52,8 +52,27 @@ def test_quota_deferral_reschedules_after_the_reset(monkeypatch) -> None:
         raise DeferredError(resume)
 
     monkeypatch.setattr(orchestrator, "default_context", lambda: None)
+    monkeypatch.setattr(orchestrator, "job_finished", lambda *_: False)
     monkeypatch.setattr(orchestrator, "run_llm_stages", deferred)
     monkeypatch.setattr(tasks.extract_document, "apply_async", lambda **kw: scheduled.append(kw))
     result = tasks.extract_document.run(str(uuid.uuid4()), str(uuid.uuid4()))
     assert result["status"] == "deferred"
     assert scheduled[0]["queue"] == "llm" and scheduled[0]["eta"] >= resume
+
+
+def test_tasks_skip_jobs_that_already_finished(monkeypatch) -> None:
+    """A redelivered (or sweeper re-enqueued) message must not run a finished job again."""
+    import uuid
+
+    from app.pipeline import orchestrator
+
+    def must_not_run(*_: object, **__: object) -> None:
+        raise AssertionError("a finished job was run again")
+
+    monkeypatch.setattr(orchestrator, "default_context", lambda: None)
+    monkeypatch.setattr(orchestrator, "job_finished", lambda *_: True)
+    for name in ("begin", "run_llm_stages", "run_validation_only"):
+        monkeypatch.setattr(orchestrator, name, must_not_run)
+    ids = (str(uuid.uuid4()), str(uuid.uuid4()))
+    for task in (tasks.process_document, tasks.extract_document, tasks.validate_document):
+        assert task.run(*ids)["status"] == "skipped"

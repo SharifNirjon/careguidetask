@@ -19,8 +19,9 @@ from celery import Task, chord
 from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy.exc import OperationalError
 
-from app.config import get_pipeline_settings, get_validation_settings
+from app.config import get_api_settings, get_pipeline_settings, get_validation_settings
 from app.db.session import get_sessionmaker
+from app.logging_setup import current_request_id
 from app.models import DocumentStatus, Stage
 from app.models.enums import ErrorCode
 from app.pipeline import orchestrator
@@ -28,10 +29,13 @@ from app.pipeline.errors import DeferredError, PermanentError, PipelineError, Tr
 from app.pipeline.orchestrator import ParsePlan
 from app.validation.reconciliation import ReconciliationService
 from app.workers.celery_app import QUEUE_DEFAULT, QUEUE_LLM, QUEUE_OCR, celery_app
+from app.workers.dispatch import REQUEST_ID_HEADER, CeleryEnqueuer, FromStage
+from app.workers.sweeper import Sweeper
 
 log = logging.getLogger(__name__)
 _settings = get_pipeline_settings()
 _rng = random.Random()
+SKIPPED_FINISHED = {"status": "skipped", "reason": "job already finished"}
 
 
 class PipelineTask(Task):
@@ -73,13 +77,15 @@ def _ids(args: tuple, kwargs: dict) -> tuple[uuid.UUID | None, uuid.UUID | None]
 
 def enqueue_document(document_id: uuid.UUID, job_id: uuid.UUID) -> None:
     """Intake hook: called only AFTER the document/job rows are committed."""
-    process_document.apply_async(args=[str(document_id), str(job_id)], queue=QUEUE_DEFAULT)
+    CeleryEnqueuer().enqueue(document_id, job_id, FromStage.PARSE)
 
 
 @celery_app.task(base=PipelineTask, bind=True, name="pipeline.process_document")
 def process_document(self: Task, document_id: str, job_id: str) -> dict[str, Any]:
     ctx = orchestrator.default_context()
     doc_id, jid = uuid.UUID(document_id), uuid.UUID(job_id)
+    if orchestrator.job_finished(ctx, jid):
+        return SKIPPED_FINISHED
     plan = orchestrator.begin(ctx, doc_id, jid, attempt=self.request.retries + 1)
     if plan is None:
         return {"status": "failed"}
@@ -118,17 +124,36 @@ def finalize_document(self: Task, document_id: str, job_id: str, plan: dict[str,
 
 
 @celery_app.task(base=PipelineTask, bind=True, name="pipeline.extract_document")
-def extract_document(self: Task, document_id: str, job_id: str) -> dict[str, Any]:
+def extract_document(self: Task, document_id: str, job_id: str, force: bool = False) -> dict[str, Any]:
     """extract -> validate -> embed. Quota exhaustion re-schedules this task for
     after the UTC reset (a NEW task, so deferrals don't consume retries)."""
+    if orchestrator.job_finished(orchestrator.default_context(), uuid.UUID(job_id)):
+        return SKIPPED_FINISHED
     try:
         status = orchestrator.run_llm_stages(
-            orchestrator.default_context(), uuid.UUID(document_id), uuid.UUID(job_id)
+            orchestrator.default_context(), uuid.UUID(document_id), uuid.UUID(job_id), force=force
         )
     except DeferredError as deferred:
         eta = deferred.resume_at + timedelta(seconds=_rng.uniform(0, _settings.llm_defer_jitter_s))
-        extract_document.apply_async(args=[document_id, job_id], queue=QUEUE_LLM, eta=eta)
+        extract_document.apply_async(
+            args=[document_id, job_id],
+            kwargs={"force": force},
+            queue=QUEUE_LLM,
+            eta=eta,
+            headers={REQUEST_ID_HEADER: current_request_id()},
+        )
         return {"status": "deferred", "eta": eta.isoformat()}
+    return {"status": status.value}
+
+
+@celery_app.task(base=PipelineTask, bind=True, name="pipeline.validate_document")
+def validate_document(self: Task, document_id: str, job_id: str) -> dict[str, Any]:
+    """Re-run validation only (rules or settings changed, or a reviewer asked)."""
+    if orchestrator.job_finished(orchestrator.default_context(), uuid.UUID(job_id)):
+        return SKIPPED_FINISHED
+    status = orchestrator.run_validation_only(
+        orchestrator.default_context(), uuid.UUID(document_id), uuid.UUID(job_id)
+    )
     return {"status": status.value}
 
 
@@ -158,12 +183,21 @@ def chord_failed(*args: Any) -> None:
 
 
 @celery_app.task(name="reconciliation.run", acks_late=True)
-def run_reconciliation(
-    left_document_ids: list[str], right_document_ids: list[str], actor: str | None = None
-) -> dict[str, Any]:
-    """User-requested batch check (Step 6 exposes it). Returns the run id + counts."""
+def run_reconciliation(run_id: str) -> dict[str, Any]:
+    """Execute a batch reconciliation created by the API (POST /reconciliations)."""
     service = ReconciliationService(session_factory=get_sessionmaker(), settings=get_validation_settings())
-    run_id, report = service.run(
-        [uuid.UUID(i) for i in left_document_ids], [uuid.UUID(i) for i in right_document_ids], actor
-    )
-    return {"run_id": str(run_id), **report.summary()["counts"]}
+    report = service.execute(uuid.UUID(run_id))
+    return {"run_id": run_id, **report.summary()["counts"]}
+
+
+@celery_app.task(name="ops.sweep")
+def sweep() -> dict[str, int]:
+    """Celery beat: re-enqueue stale queued jobs, fail overdue running ones."""
+    api = get_api_settings()
+    report = Sweeper(
+        session_factory=get_sessionmaker(),
+        enqueuer=CeleryEnqueuer(),
+        stale_queued=timedelta(minutes=api.stale_queued_minutes),
+        max_runtime=timedelta(minutes=api.job_max_runtime_minutes),
+    ).run()
+    return {"requeued": len(report.requeued), "timed_out": len(report.timed_out)}

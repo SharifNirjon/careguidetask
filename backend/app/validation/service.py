@@ -88,6 +88,13 @@ class ValidationService:
         except IntegrityError:  # a concurrent run inserted the same active fingerprint first
             return self._validate_once(extraction_id, trigger)
 
+    def validate_in(
+        self, session: Session, extraction_id: uuid.UUID, *, trigger: Trigger
+    ) -> ValidationOutcome:
+        """Validate inside the CALLER's transaction (manual corrections: the edit and
+        its re-validation commit together). The caller commits."""
+        return self._validate(session, extraction_id, trigger, propagate=True)
+
     def _validate_once(self, extraction_id: uuid.UUID, trigger: Trigger) -> ValidationOutcome:
         with self._session() as session:
             return self._validate(session, extraction_id, trigger, propagate=True)

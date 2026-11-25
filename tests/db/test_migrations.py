@@ -128,7 +128,7 @@ def test_enum_checks_match_python_enums(engine: Engine) -> None:
                 db_values = set(re.findall(r"'([^']+)'", definition))
                 assert db_values == {m.value for m in col.type.enum_cls}, (table.name, col.name)
                 checked += 1
-    assert checked == 16  # update when adding an enum-like column
+    assert checked == 17  # update when adding an enum-like column
 
 
 def test_special_indexes_and_generated_column(engine: Engine) -> None:

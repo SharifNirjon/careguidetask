@@ -58,6 +58,51 @@ services:
       - ./docs:/app/docs
       - ./pytest.ini:/app/pytest.ini:ro
 
+  api:
+    build:
+      context: ./backend
+    command: >-
+      gunicorn "app.api.app:main()" -k uvicorn.workers.UvicornWorker
+      --bind 0.0.0.0:8000 --workers ${WEB_CONCURRENCY:-2}
+      --graceful-timeout 30 --timeout 120 --access-logfile -
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-careguide}:${POSTGRES_PASSWORD:-careguide}@db:5432/${POSTGRES_DB:-careguide}
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_ROOT: /data/storage
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - storage:/data/storage
+    stop_grace_period: 40s  # > gunicorn graceful-timeout: in-flight requests finish
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  beat:
+    # Exactly ONE beat process: it schedules the stale-job sweeper.
+    build:
+      context: ./backend
+    command: celery -A app.workers.celery_app beat --loglevel=INFO --schedule /tmp/celerybeat-schedule
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-careguide}:${POSTGRES_PASSWORD:-careguide}@db:5432/${POSTGRES_DB:-careguide}
+      REDIS_URL: redis://redis:6379/0
+
 volumes:
   pgdata:
   storage:

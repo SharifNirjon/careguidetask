@@ -73,6 +73,7 @@ log = logging.getLogger(__name__)
 CONFIDENCE_QUANT = Decimal("0.001")
 SCOPE_BATCH = "batch"
 SCOPE_DOCUMENT = "document"
+FINISHED_JOB_STATUSES = frozenset({JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED})
 
 
 # -------------------------------------------------------------- dependencies
@@ -579,6 +580,27 @@ def run_llm_stages(
     return final
 
 
+def run_validation_only(ctx: PipelineContext, document_id: uuid.UUID, job_id: uuid.UUID) -> DocumentStatus:
+    """REVALIDATE jobs: validation over the current extractions, nothing else."""
+    with ctx.session() as session:
+        doc = session.get_one(Document, document_id)
+        job = session.get_one(ProcessingJob, job_id)
+        doc.status, doc.error_code, doc.error_message = DocumentStatus.PROCESSING, None, None
+        job.status, job.started_at = JobStatus.RUNNING, _now()
+        stats = _unit_stats(session, document_id)
+    validate_only = [(stage, fn) for stage, fn in POST_EXTRACT_STAGES if stage is Stage.VALIDATE]
+    if (status := _run_stages(ctx, document_id, job_id, validate_only, stats)) is not None:
+        return status
+    with ctx.session() as session:
+        doc = session.get_one(Document, document_id)
+        job = session.get_one(ProcessingJob, job_id)
+        if doc.status is not DocumentStatus.NEEDS_REVIEW:
+            doc.status = DocumentStatus.COMPLETED
+        doc.processing_finished_at = _now()
+        job.status, job.finished_at = JobStatus.SUCCEEDED, _now()
+        return doc.status
+
+
 def _extract(
     ctx: PipelineContext, document_id: uuid.UUID, job_id: uuid.UUID, *, force: bool
 ) -> DocumentStatus | None:
@@ -669,6 +691,14 @@ def fail(
     )
 
 
+def job_finished(ctx: PipelineContext, job_id: uuid.UUID) -> bool:
+    """Task guard: a redelivered or sweeper-re-enqueued message for a job that
+    already ended (succeeded / failed / cancelled) must not run it again."""
+    with ctx.session() as session:
+        job = session.get(ProcessingJob, job_id)
+        return job is None or job.status in FINISHED_JOB_STATUSES
+
+
 # ----------------------------------------------------------------- sync runner
 
 
@@ -708,9 +738,11 @@ __all__ = [
     "defer",
     "fail",
     "finalize",
+    "job_finished",
     "parse_batch",
     "record_event",
     "run_document",
     "run_llm_stages",
+    "run_validation_only",
     "upsert_units",
 ]

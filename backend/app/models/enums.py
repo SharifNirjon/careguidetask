@@ -33,6 +33,7 @@ class ErrorCode(StrEnum):
     OCR_ERROR = "OCR_ERROR"
     LLM_ERROR = "LLM_ERROR"
     LLM_QUOTA_DEFERRED = "LLM_QUOTA_DEFERRED"
+    WORKER_TIMEOUT = "WORKER_TIMEOUT"
     LLM_UNAVAILABLE = "LLM_UNAVAILABLE"
     NOT_AN_INVOICE = "NOT_AN_INVOICE"
     EMBEDDING_ERROR = "EMBEDDING_ERROR"
@@ -116,6 +117,21 @@ class JobType(StrEnum):
     REEXTRACT = "reextract"
     REVALIDATE = "revalidate"
     REEMBED = "reembed"
+
+
+class ApiRole(StrEnum):
+    """Ordered: each role includes everything the previous one may do."""
+
+    VIEWER = "viewer"
+    REVIEWER = "reviewer"
+    ADMIN = "admin"
+
+    @property
+    def rank(self) -> int:
+        return list(ApiRole).index(self)
+
+    def allows(self, required: "ApiRole") -> bool:
+        return self.rank >= required.rank
 
 
 class JobStatus(StrEnum):

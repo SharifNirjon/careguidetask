@@ -1,8 +1,10 @@
 """All ORM models. Importing this package registers every table on Base.metadata."""
 
+from app.models.auth import ApiKey
 from app.models.base import NAMING_CONVENTION, Base
 from app.models.document import Document, DocumentUnit
 from app.models.enums import (
+    ApiRole,
     DocumentStatus,
     ErrorCode,
     EventStatus,
@@ -33,6 +35,8 @@ from app.models.search import Chunk
 
 __all__ = [
     "NAMING_CONVENTION",
+    "ApiKey",
+    "ApiRole",
     "Base",
     "Chunk",
     "Correction",

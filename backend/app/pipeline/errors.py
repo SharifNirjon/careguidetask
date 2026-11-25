@@ -30,6 +30,7 @@ USER_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.DECOMPRESSION_BOMB: "The file expands to an unsafe size and was rejected.",
     ErrorCode.STORAGE_ERROR: "The file could not be stored or read. Please try again.",
     ErrorCode.TIMEOUT: "Processing took too long.",
+    ErrorCode.WORKER_TIMEOUT: "Processing stopped responding and was cancelled. It can be reprocessed.",
     ErrorCode.OCR_ERROR: "Text recognition failed for part of the file.",
     ErrorCode.INTERNAL_ERROR: "An unexpected error occurred while processing the file.",
     ErrorCode.LLM_ERROR: "Automatic data extraction failed for this file.",
