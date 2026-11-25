@@ -12,7 +12,7 @@ from __future__ import annotations
 from celery import Celery
 from celery.signals import task_postrun, task_prerun, worker_process_init
 
-from app.config import get_api_settings, get_pipeline_settings
+from app.config import get_api_settings, get_pipeline_settings, get_search_settings
 from app.db.session import dispose_engine_after_fork
 from app.logging_setup import bind_request_id, configure_logging
 
@@ -45,6 +45,17 @@ celery_app.conf.update(
     # `celery -A app.workers.celery_app beat`: run exactly ONE beat process.
     beat_schedule={
         "sweep-stale-jobs": {"task": "ops.sweep", "schedule": float(get_api_settings().sweeper_interval_s)},
+        # Embedding runs on the rate-limited llm queue, after extraction work.
+        "embed-pending-chunks": {
+            "task": "search.embed_pending",
+            "schedule": float(get_search_settings().embed_sweep_interval_s),
+            "options": {"queue": QUEUE_LLM, "priority": 9},
+        },
+        "reembed-fallback-space": {
+            "task": "search.reembed",
+            "schedule": float(get_search_settings().reembed_interval_s),
+            "options": {"queue": QUEUE_LLM, "priority": 9},
+        },
     },
 )
 

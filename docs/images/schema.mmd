@@ -1,0 +1,158 @@
+erDiagram
+    documents ||--o{ document_units : "parsed into"
+    documents ||--o{ extractions : "contains invoices"
+    documents ||--o{ processing_jobs : "processed by"
+    documents ||--o{ processing_events : "history"
+    documents ||--o{ chunks : "indexed as"
+    documents |o--o{ documents : "duplicate_of"
+    processing_jobs ||--o{ processing_events : "logs"
+    processing_jobs |o--o{ extractions : "produced"
+    document_units ||--o{ chunks : "split into"
+    extractions ||--o{ line_items : "has"
+    extractions ||--o{ validation_issues : "flagged by"
+    extractions |o--o{ validation_issues : "related"
+    extractions ||--o{ corrections : "audited by"
+    line_items |o--o{ corrections : "edited field"
+    extractions ||--o{ reconciliations : "left"
+    extractions ||--o{ reconciliations : "right"
+    reconciliation_runs |o--o{ reconciliations : "last compared in"
+    extractions |o--o{ chunks : "about"
+
+    documents {
+        uuid id PK
+        text original_filename
+        text storage_key UK
+        text mime_type "sniffed from bytes"
+        bigint size_bytes
+        char64 sha256 "non-unique"
+        text status "uploaded..failed"
+        text error_code
+        int page_count
+        uuid duplicate_of_document_id FK
+        text uploaded_by "API key name"
+        jsonb segments
+        timestamptz deleted_at "soft delete"
+    }
+    document_units {
+        uuid id PK
+        uuid document_id FK
+        text unit_type "pdf_page|image_frame|sheet|csv"
+        int unit_index
+        text text
+        text extraction_method
+        numeric ocr_confidence
+        jsonb structured_data
+        text error_code
+        jsonb warnings
+    }
+    extractions {
+        uuid id PK
+        uuid document_id FK
+        int invoice_index
+        int unit_start
+        int unit_end
+        int version
+        bool is_current
+        text invoice_number
+        date invoice_date
+        text supplier_name
+        text customer_name
+        numeric total
+        char3 currency
+        text invoice_number_norm
+        text supplier_name_norm
+        jsonb field_meta
+        text review_status
+        int lock_version "optimistic lock"
+        uuid processing_job_id FK
+    }
+    line_items {
+        uuid id PK
+        uuid extraction_id FK
+        int position
+        text description
+        numeric quantity
+        numeric unit_price
+        numeric amount
+        numeric tax_rate
+        jsonb field_meta
+    }
+    validation_issues {
+        uuid id PK
+        uuid extraction_id FK
+        text rule_code
+        text severity
+        text field_path
+        uuid related_extraction_id FK
+        text fingerprint
+        timestamptz resolved_at
+        timestamptz superseded_at
+    }
+    corrections {
+        uuid id PK
+        uuid extraction_id FK
+        uuid line_item_id FK
+        text field_path
+        jsonb old_value
+        jsonb new_value
+        text corrected_by
+    }
+    reconciliations {
+        uuid id PK
+        uuid left_extraction_id FK "left < right"
+        uuid right_extraction_id FK
+        text match_method
+        text status
+        jsonb differences
+        uuid run_id FK
+    }
+    reconciliation_runs {
+        uuid id PK
+        uuid_array left_document_ids
+        uuid_array right_document_ids
+        text status
+        jsonb summary "the report"
+        text created_by
+    }
+    processing_jobs {
+        uuid id PK
+        uuid document_id FK
+        text job_type
+        text status "one queued/running per doc"
+        int attempt
+        text triggered_by
+        text error_code
+    }
+    processing_events {
+        bigint id PK
+        uuid job_id FK
+        uuid document_id FK
+        text stage
+        text status
+        int duration_ms
+        jsonb details
+    }
+    chunks {
+        uuid id PK
+        uuid document_id FK
+        uuid unit_id FK
+        uuid extraction_id FK
+        int chunk_index
+        text chunk_kind "content|extraction_summary"
+        text content
+        char64 content_sha256
+        vector embedding "VECTOR(1024), NULL until embedded"
+        text embedding_space
+        text embedding_model
+        timestamptz embedded_at
+        tsvector tsv "generated, GIN"
+    }
+    api_keys {
+        uuid id PK
+        text name
+        text key_prefix UK
+        char64 key_hash "sha256 only"
+        text role "viewer|reviewer|admin"
+        timestamptz last_used_at
+        timestamptz revoked_at
+    }

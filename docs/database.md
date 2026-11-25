@@ -1,7 +1,8 @@
 # Database
 
-PostgreSQL 16 + pgvector + pg_trgm, accessed through SQLAlchemy 2.0 (sync, psycopg 3).
-Schema changes go through Alembic only.
+PostgreSQL 16 + pgvector 0.8 + pg_trgm, accessed through SQLAlchemy 2.x (sync, psycopg 3).
+Schema changes go through Alembic only. This page describes the **final schema after
+migrations 0001–0006** (Steps 2–7).
 
 | What | Where |
 |---|---|
@@ -10,7 +11,7 @@ Schema changes go through Alembic only.
 | Engine / sessions | `backend/app/db/session.py` |
 | Extraction versioning helper | `backend/app/db/versioning.py` |
 | Seed data | `backend/app/db/seed.py` |
-| Tests | `tests/db/` |
+| Tests | `tests/db/` (schema), `tests/search/` (search model) |
 
 ## Quick start
 
@@ -26,6 +27,17 @@ cd .. && pytest tests/db                     # creates/drops careguide_test*
 
 ## Entity–relationship diagram
 
+![Schema](images/schema.png)
+
+Rendered from the Mermaid source below (`docs/images/schema.mmd`) with mermaid-cli:
+
+```bash
+npx -y @mermaid-js/mermaid-cli@11.4.2 -i docs/images/schema.mmd -o docs/images/schema.png -w 2400 -b white
+```
+
+If mermaid-cli can't run (it downloads a headless Chromium), paste the block below into
+<https://mermaid.live>, export PNG, and save it as `docs/images/schema.png`.
+
 ```mermaid
 erDiagram
     documents ||--o{ document_units : "parsed into"
@@ -35,27 +47,31 @@ erDiagram
     documents ||--o{ chunks : "indexed as"
     documents |o--o{ documents : "duplicate_of"
     processing_jobs ||--o{ processing_events : "logs"
+    processing_jobs |o--o{ extractions : "produced"
     document_units ||--o{ chunks : "split into"
     extractions ||--o{ line_items : "has"
     extractions ||--o{ validation_issues : "flagged by"
-    extractions |o--o{ validation_issues : "related (dup / cross-doc)"
+    extractions |o--o{ validation_issues : "related"
     extractions ||--o{ corrections : "audited by"
     line_items |o--o{ corrections : "edited field"
     extractions ||--o{ reconciliations : "left"
     extractions ||--o{ reconciliations : "right"
+    reconciliation_runs |o--o{ reconciliations : "last compared in"
     extractions |o--o{ chunks : "about"
 
     documents {
         uuid id PK
         text original_filename
         text storage_key UK
-        text mime_type
+        text mime_type "sniffed from bytes"
         bigint size_bytes
-        char sha256 "non-unique index"
+        char64 sha256 "non-unique"
         text status "uploaded..failed"
         text error_code
         int page_count
         uuid duplicate_of_document_id FK
+        text uploaded_by "API key name"
+        jsonb segments
         timestamptz deleted_at "soft delete"
     }
     document_units {
@@ -63,12 +79,12 @@ erDiagram
         uuid document_id FK
         text unit_type "pdf_page|image_frame|sheet|csv"
         int unit_index
-        text sheet_name
         text text
         text extraction_method
         numeric ocr_confidence
         jsonb structured_data
-        jsonb image_quality
+        text error_code
+        jsonb warnings
     }
     extractions {
         uuid id PK
@@ -81,13 +97,15 @@ erDiagram
         text invoice_number
         date invoice_date
         text supplier_name
+        text customer_name
         numeric total
-        char currency
+        char3 currency
         text invoice_number_norm
         text supplier_name_norm
         jsonb field_meta
         text review_status
         int lock_version "optimistic lock"
+        uuid processing_job_id FK
     }
     line_items {
         uuid id PK
@@ -98,6 +116,7 @@ erDiagram
         numeric unit_price
         numeric amount
         numeric tax_rate
+        jsonb field_meta
     }
     validation_issues {
         uuid id PK
@@ -106,6 +125,7 @@ erDiagram
         text severity
         text field_path
         uuid related_extraction_id FK
+        text fingerprint
         timestamptz resolved_at
         timestamptz superseded_at
     }
@@ -118,13 +138,31 @@ erDiagram
         jsonb new_value
         text corrected_by
     }
+    reconciliations {
+        uuid id PK
+        uuid left_extraction_id FK "left < right"
+        uuid right_extraction_id FK
+        text match_method
+        text status
+        jsonb differences
+        uuid run_id FK
+    }
+    reconciliation_runs {
+        uuid id PK
+        uuid_array left_document_ids
+        uuid_array right_document_ids
+        text status
+        jsonb summary "the report"
+        text created_by
+    }
     processing_jobs {
         uuid id PK
         uuid document_id FK
         text job_type
-        text celery_task_id
-        text status
+        text status "one queued/running per doc"
         int attempt
+        text triggered_by
+        text error_code
     }
     processing_events {
         bigint id PK
@@ -135,107 +173,389 @@ erDiagram
         int duration_ms
         jsonb details
     }
-    reconciliations {
-        uuid id PK
-        uuid left_extraction_id FK "left < right"
-        uuid right_extraction_id FK
-        text match_key
-        text match_method
-        text status
-        jsonb differences
-    }
     chunks {
         uuid id PK
         uuid document_id FK
         uuid unit_id FK
         uuid extraction_id FK
         int chunk_index
+        text chunk_kind "content|extraction_summary"
         text content
-        vector embedding "VECTOR(1024), HNSW cosine"
+        char64 content_sha256
+        vector embedding "VECTOR(1024), NULL until embedded"
         text embedding_space
         text embedding_model
+        timestamptz embedded_at
         tsvector tsv "generated, GIN"
+    }
+    api_keys {
+        uuid id PK
+        text name
+        text key_prefix UK
+        char64 key_hash "sha256 only"
+        text role "viewer|reviewer|admin"
+        timestamptz last_used_at
+        timestamptz revoked_at
     }
 ```
 
-## Tables
+`api_keys` has no foreign keys on purpose: audit columns (`uploaded_by`, `corrected_by`,
+`resolved_by`, `reviewed_by`, `triggered_by`, `created_by`) store the key's **name**, so
+history stays readable after a key is revoked or deleted.
 
-**documents.** One row per uploaded file. It records what was uploaded (`original_filename`, `mime_type` sniffed from the bytes, `size_bytes`, `sha256`), where it is stored (`storage_key`, unique), and the file's overall pipeline state (`status`, `error_code`, `processing_*_at`). Re-uploads of the same bytes are stored as new rows and linked through `duplicate_of_document_id`. Invoice boundaries found by the segmenter are stored in `segments` (JSONB, migration 0002). Rows are soft-deleted with `deleted_at`; a hard `DELETE` cascades to everything below and is only for retention or GDPR purges.
+## Tables and their indexes
 
-**document_units.** The smallest parsed unit: one PDF page, one image or TIFF frame, one spreadsheet sheet, or one CSV file. It holds the text, how the text was obtained (`digital`, `ocr` or `spreadsheet`), OCR confidence, image-quality metrics, and, for sheets, normalized rows in `structured_data`. `(document_id, unit_type, unit_index)` is unique, so re-parsing a document must replace its units rather than add to them. A unit that failed to parse keeps its row with `error_code` set (the rest of the document proceeds); non-fatal issues such as truncation or PDF repairs go in `warnings` (JSONB list). Added in migration 0002 by the ingestion pipeline (see docs/pipeline.md).
+Every FK is the leading column of a full (non-partial) index, so cascades never scan
+(`tests/db/test_constraints.py` checks the catalog). Primary keys (`pk_*`) are not repeated
+below.
 
-**extractions.** One invoice found inside a document, one row **per extraction run**. `invoice_index` identifies the invoice within the file, and `unit_start`/`unit_end` give its unit span. Reprocessing inserts `version = n+1` and flips the previous row's `is_current` to false in the same transaction (`app.db.versioning.add_extraction_version`). A partial unique index guarantees at most one current row per invoice. Invoice fields are nullable: a missing value is NULL, never a guess. `field_meta` holds per-field provenance (`confidence`, `evidence_text`, `unit_index`, `source`, `grounded`). `lock_version` is SQLAlchemy's `version_id_col`, so two reviewers saving the same row can't silently overwrite each other; the second gets `StaleDataError`.
+### documents
 
-**line_items.** The lines of one extraction version, ordered by `position`. They belong to a specific version, so a re-extraction produces a fresh set.
+One row per uploaded file: what was uploaded (`original_filename`, `mime_type` sniffed from
+the bytes, `size_bytes`, `sha256`), where it is stored (`storage_key`), who uploaded it, and
+the file's pipeline state (`status`, `error_code`, `processing_*_at`). Re-uploads of the
+same bytes are new rows linked through `duplicate_of_document_id`. Invoice boundaries from
+the segmenter are in `segments`. Rows are soft-deleted with `deleted_at`; a hard `DELETE`
+cascades to everything below and is only for retention or GDPR purges.
 
-**validation_issues.** Rule violations found for an extraction (`rule_code`, `severity`, the `field_path` that failed, and expected vs actual values). For duplicates and cross-document mismatches, `related_extraction_id` points at the other invoice. Re-validation never deletes rows: it sets `superseded_at` on the old issues and inserts new ones. A reviewer closes an issue with `resolved_at`, `resolved_by` and `resolution_note`.
+| index | why |
+|---|---|
+| `uq_documents_storage_key` | one row per stored blob |
+| `ix_documents_sha256` (non-unique) | byte-identical duplicate lookup at intake |
+| `ix_documents_status_created_at (status, created_at DESC)` | the review queue: "needs_review, newest first" |
+| `ix_documents_duplicate_of_document_id` | FK index |
 
-**corrections.** An append-only audit of every manual edit: which field, the old and new value (JSONB, with decimals stored as strings), who made it and why. A trigger blocks UPDATE. The one exception is the `ON DELETE SET NULL` of `line_item_id`, so deleting a line item keeps its history (`field_path` still says what changed).
+### document_units
 
-**processing_jobs.** One row per attempt to process a document (`full`, `reprocess`, `reextract`, `revalidate` or `reembed`), with its Celery task id, status, attempt number, who triggered it and any error. `celery_task_id` is indexed but not unique, because Celery retries reuse the same id.
+The smallest parsed unit: a PDF page, an image or TIFF frame, a sheet, or a CSV file. It
+holds the text, how it was obtained (`digital`, `ocr`, `spreadsheet`), OCR confidence, image
+quality, and for sheets the normalized rows in `structured_data`. A unit that failed to
+parse keeps its row with `error_code` set; non-fatal issues go in `warnings`.
 
-**processing_events.** The processing history: an append-only log with one row per stage transition (`ingest` … `reconcile`), giving duration and details. It is the highest-volume table, so its key is a BIGINT identity. `document_id` is copied onto each row so a document's timeline needs one index lookup. A composite FK to `processing_jobs(id, document_id)` makes it impossible for the copy to disagree with the job. `job_id` is nullable so events can be logged before a job exists.
+| index | why |
+|---|---|
+| `uq_document_units_document_id_unit_type_unit_index` | re-parsing upserts in place (stable unit ids); also the FK index |
+| `uq_document_units_id_document_id` | target of the chunks composite FK (keeps `chunks.document_id` consistent) |
 
-**reconciliations.** Cross-document verification between two extractions: PDF↔PDF (for example an invoice and its copy) or PDF↔Excel (for example an invoice against an ERP export). It records how the pair was matched, whether it matched, and the field-level `differences`. The pair is stored in canonical order (`left < right`, enforced by a CHECK), so A–B and B–A can't both exist. Build rows with `Reconciliation.between(a, b)`.
+### extractions
 
-**chunks.** The search index. Each chunk is a span of a unit's text, optionally tied to an extraction, with a pgvector `embedding` and a generated `tsv` column for full-text search. Composite FKs keep the copied `document_id` consistent with its unit and extraction.
+One invoice found in a document, one row **per extraction run** (see versioning below).
+`field_meta` holds per-field provenance (`raw_value`, `confidence`, `evidence_text`,
+`unit_index`, `source`: llm, rule or manual, `grounded`), plus `_document_type` and a
+reviewer's `_review` decision. `lock_version` is SQLAlchemy's `version_id_col`.
+
+| index | why |
+|---|---|
+| `uq_extractions_document_id_invoice_index_current` (partial `WHERE is_current`) | at most one live version per invoice |
+| `uq_extractions_document_id_invoice_index_version` | version numbers never repeat; also the FK index |
+| `uq_extractions_id_document_id` | target of the chunks composite FK |
+| `ix_extractions_supplier_name_norm_invoice_number_norm` | exact duplicate check (same supplier + number) |
+| `ix_extractions_supplier_name_norm_trgm` (GIN trigram) | fuzzy supplier matching (duplicates, the `supplier` filter, search) |
+| `ix_extractions_customer_name_trgm` (GIN trigram on `lower(customer_name)`) | the `customer` filter (`lower() LIKE`) and customer search (0006) |
+| `ix_extractions_invoice_date`, `ix_extractions_total` | range filters and sorting |
+| `ix_extractions_review_status` | review-status filter and stats |
+| `ix_extractions_processing_job_id` | FK index; makes a retried extraction job idempotent |
+
+### line_items
+
+The lines of one extraction version, ordered by `position`, with per-field `field_meta`.
+`uq_line_items_extraction_id_position` keeps positions unique and is the FK index.
+
+### validation_issues
+
+Rule violations of an extraction: `rule_code`, `severity`, `field_path`, expected vs actual
+values, and `related_extraction_id` for duplicates and cross-document checks. See the
+issue lifecycle below.
+
+| index | why |
+|---|---|
+| `uq_validation_issues_extraction_id_fingerprint_active` (partial `WHERE superseded_at IS NULL`) | one ACTIVE issue per fingerprint; backstop for concurrent re-validation |
+| `ix_validation_issues_extraction_id_active` (partial) | "open issues of this extraction", the hot path |
+| `ix_validation_issues_extraction_id` (full) | FK index: a cascade must also find superseded rows |
+| `ix_validation_issues_related_extraction_id` | FK index (SET NULL) |
+| `ix_validation_issues_rule_code_severity` | `rule_code` filter and the "issues by rule" stats |
+
+### corrections
+
+The append-only audit trail of manual edits (see below). `ix_corrections_extraction_id`
+serves the correction history; `ix_corrections_line_item_id` is the FK index.
+
+### reconciliations
+
+Cross-document verification of two extractions, PDF↔PDF or PDF↔Excel. It records the match
+method, the status and the field-level `differences`, stored in canonical order (`left <
+right`, enforced by a CHECK). `run_id` names the batch run that last compared the pair.
+
+| index | why |
+|---|---|
+| `uq_reconciliations_left_extraction_id_right_extraction_id` | one row per pair (upserted); also the left FK index |
+| `ix_reconciliations_right_extraction_id` | FK index; "reconciliations of this extraction" from either side |
+| `ix_reconciliations_run_id` | FK index (SET NULL) |
+
+### reconciliation_runs
+
+A user-requested batch check of one document set against another (PDFs vs an Excel
+ledger). The full report is kept in `summary`, with these keys: matched, mismatched,
+only_in_left, only_in_right, ambiguous, counts. The API creates the row first, so the
+caller gets a `run_id` at once, then a Celery task fills it in.
+
+### processing_jobs
+
+One row per attempt to process a document (`full`, `reprocess`, `reextract`, `revalidate`,
+`reembed`), with status, attempt number, who triggered it and any error.
+
+| index | why |
+|---|---|
+| `uq_processing_jobs_document_id_active` (partial `WHERE status IN ('queued','running')`) | at most one active job per document; a concurrent reprocess gets 409 even under a race (0005) |
+| `ix_processing_jobs_document_id_queued_at (document_id, queued_at DESC)` | "latest job of this document"; also the FK index |
+| `ix_processing_jobs_status` | the stale-job sweeper and stats |
+| `ix_processing_jobs_celery_task_id` (non-unique) | Celery retries reuse the task id |
+| `uq_processing_jobs_id_document_id` | target of the events composite FK |
+
+### processing_events
+
+The processing history: one append-only row per stage transition (`ingest` … `embed`), with
+its duration and details. It is the highest-volume table, so its key is a BIGINT identity.
+`document_id` is copied onto each row, and a composite FK to `processing_jobs(id,
+document_id)` keeps the copy honest.
+
+| index | why |
+|---|---|
+| `ix_processing_events_document_id_created_at` | one document's timeline (API events, progress); also the FK index |
+| `ix_processing_events_job_id` | events of one job (progress of the latest job) |
+
+### chunks (the search model)
+
+Searchable spans of text. There are two kinds (`chunk_kind`):
+
+- **`content`**: one unit's text, packed by lines with overlap. Sheet and CSV chunks repeat
+  their header row.
+- **`extraction_summary`**: one per current extraction, generated from its normalized fields,
+  for example "Invoice INV-2026-001 from Acme Ltd to Beta Corp, dated 2026-03-01 (March
+  2026), total 1,234.56 USD. Items: …".
+
+Every chunk has a generated full-text column `tsv`. It uses the 'simple' parser, and `-` and
+`/` between letters or digits are read as spaces, so `INV-2026-001` is indexed as `inv 2026
+001`. The `embedding` vector stays NULL until the embed task runs. Vectors live in **spaces**:
+a space is one model's output, and two spaces are never compared.
+`(embedding IS NULL) = (embedding_model IS NULL) = (embedding_space IS NULL) = (embedded_at
+IS NULL)` is enforced by CHECKs, and `content_sha256` lets re-chunking keep the embedding of
+unchanged text.
+
+| index | why |
+|---|---|
+| `ix_chunks_embedding_hnsw_<space>` (HNSW cosine, partial `WHERE embedding_space = '<space>'`), one per space in `EMBEDDING_SPACES` | k-NN within one space. A vector query always names its space; per-space graphs never mix incomparable vectors (0006) |
+| `ix_chunks_tsv` (GIN) | full-text search |
+| `ix_chunks_pending_embedding` (partial `WHERE embedding IS NULL`) | the embedding work queue: small, and only the rows still to do (0006) |
+| `ix_chunks_document_id_chunk_index` | ordered per-document reads and re-chunking; also the FK index (0006) |
+| `ix_chunks_unit_id`, `ix_chunks_extraction_id` | FK indexes (composite FKs to units / extractions) |
+
+### api_keys
+
+API credentials. Only `sha256(key)` is stored, and the key itself is shown once. Lookup goes
+through the public `key_prefix` (`uq_api_keys_key_prefix`), then the hash is compared in
+constant time. Keys are revoked with `revoked_at`, never deleted, and `last_used_at` is
+written at most once a minute.
+
+## Versioning, lifecycle and audit
+
+### Extraction versions
+
+Reprocessing (a new model, a new prompt, fixed OCR) must not destroy the previous result.
+Each run inserts `version = n+1`, and `add_extraction_version` flips the previous row's
+`is_current` to false in the same transaction:
+
+```mermaid
+sequenceDiagram
+    participant W as worker
+    participant DB as extractions
+    W->>DB: SELECT documents ... FOR NO KEY UPDATE (serialize reprocessing)
+    W->>DB: UPDATE v1 SET is_current = false (flush first: the partial unique index can't be deferred)
+    W->>DB: INSERT v2 (is_current = true)
+    Note over DB: line_items, issues, chunks of v1 stay as history
+```
+
+The ORM flip bumps `lock_version`, so a reviewer still editing v1 gets a conflict (409 or
+412), never a silent write to history. Every read filters `is_current`.
+
+### Issue lifecycle (fingerprints)
+
+Re-validation computes the new issue set and diffs it against the ACTIVE issues by
+fingerprint, `sha256(rule_code | field_path | related_extraction_id)`:
+
+```mermaid
+stateDiagram-v2
+    [*] --> open: rule fires (insert)
+    open --> resolved: reviewer resolves (note)
+    resolved --> open: reviewer reopens / value changed
+    open --> superseded: fingerprint gone (fixed by a correction or re-extraction)
+    resolved --> superseded: fingerprint gone
+    open --> open: same fingerprint on re-validation (row kept)
+    resolved --> resolved: same fingerprint (resolution kept)
+```
+
+Unchanged issues keep their row, so a reviewer's resolution survives re-validation. Rows
+are never deleted.
+
+### Audit trail
+
+- **`corrections`**: one row per changed field: old and new value (JSONB, decimals as
+  strings), who and why. Writes happen in the same transaction as the change and its
+  re-validation.
+  - **Append-only:** a trigger raises `restrict_violation` on UPDATE.
+  - **Line-item deletes:** the one allowed update is the `ON DELETE SET NULL` of
+    `line_item_id`, so deleting a line item keeps its history.
+- **`processing_events`**: append-only (trigger).
+- **Who did what:** audit columns everywhere hold the authenticated API key's name, never
+  a value from a request body.
 
 ## Conventions
 
-- **Keys:** UUID primary keys with `DEFAULT gen_random_uuid()`, except `processing_events.id` (BIGINT identity).
-- **Time:** every timestamp is `timestamptz`. `created_at DEFAULT now()`. `updated_at` (on `documents` and `extractions`) is set by the `set_updated_at` trigger, so it stays correct for raw SQL too; ORM `onupdate` only covers ORM flushes.
-- **Numbers:** money and quantities are `NUMERIC(18,4)`, rates are `NUMERIC(7,4)`, and confidence is `NUMERIC(4,3)` with `CHECK 0..1`. They map to Python `Decimal`; there is no float anywhere.
-- **Enum-like columns:** `TEXT` + `CHECK (col IN (...))`, each mirrored by a `StrEnum` in `app/models/enums.py`. A test asserts the two match.
-- **Names:** deterministic `pk_`, `fk_`, `uq_`, `ck_`, `ix_` names via the MetaData naming convention. A test asserts every constraint and index follows it.
-- **FK indexes:** every FK is the leading column(s) of a full (non-partial) index; a test checks the catalog. A partial index doesn't count, because cascades must also find rows the predicate excludes, which is why `validation_issues` has both a full and a partial `extraction_id` index.
-- **Deletes:** `ON DELETE CASCADE` from `documents` downward. Optional back-references (`duplicate_of_document_id`, `related_extraction_id`, `corrections.line_item_id`) use `SET NULL`.
+- **Keys:** UUID primary keys with `DEFAULT gen_random_uuid()`, except `processing_events.id`
+  (BIGINT identity).
+- **Time:** every timestamp is `timestamptz`.
+  - `created_at` defaults to `now()`.
+  - `updated_at` on `documents` and `extractions` is set by the `set_updated_at` trigger,
+    so it stays correct for raw SQL too.
+- **Numbers:** money and quantities are `NUMERIC(18,4)`, rates `NUMERIC(7,4)`, confidence
+  `NUMERIC(4,3)` with `CHECK 0..1`. They map to Python `Decimal`, and the API sends them as
+  strings. There is no float anywhere.
+- **Enum-like columns:** `TEXT` + `CHECK (col IN (...))`, each mirrored by a `StrEnum` in
+  `app/models/enums.py`. A test asserts the two match; there are 18 such columns.
+- **Names:** `pk_`, `fk_`, `uq_`, `ck_`, `ix_` via the MetaData naming convention, checked
+  by a test.
+- **Deletes:** `ON DELETE CASCADE` from `documents` downward. Optional back-references use
+  `SET NULL`.
 
 ## Design decisions and trade-offs
 
-**UUID primary keys.** IDs can be generated anywhere (API, workers, imports) without a round trip; they are safe to expose in URLs (not enumerable); and they merge cleanly across environments. The costs are 16-byte keys and random index inserts. At thousands of documents per day that is negligible. If the index write amplification ever shows up, switch the default to UUIDv7 (time-ordered): the column type stays the same. The highest-volume, never-exposed table (`processing_events`) uses BIGINT identity instead.
+**UUID primary keys.**
 
-**TEXT + CHECK instead of native ENUM.** Adding a value to a PG ENUM needs `ALTER TYPE ... ADD VALUE`, which historically couldn't run inside a transaction. Removing or renaming a value requires recreating the type and rewriting every column that uses it. A CHECK constraint is dropped and re-added in one transactional migration (`NOT VALID` + `VALIDATE CONSTRAINT` on large tables, to avoid a long lock). The trade-off: the allowed values live in two places (CHECK and `StrEnum`), kept in sync by a test, and TEXT is a few bytes larger than a 4-byte enum.
+- **Why:** IDs can be generated anywhere without a round trip, they are safe in URLs (not
+  enumerable), and they merge cleanly across environments.
+- **Cost:** 16-byte keys and random index inserts, which is negligible at thousands of
+  documents per day.
+- **If it ever matters:** switch the default to UUIDv7 (the column type stays the same).
 
-**Versioned extractions with `is_current`.** Reprocessing (new model, new prompt, fixed OCR) must not destroy the previous result. We need it to compare runs, to evaluate prompts, and to explain what the system said at review time. Each run is a new row, and `is_current` makes "the live answer" a cheap indexed predicate instead of a `max(version)` subquery. Two constraints protect the invariant: a partial unique index (one current row per invoice) and `UNIQUE (document_id, invoice_index, version)`.
+**TEXT + CHECK instead of native ENUM.**
 
-Because a partial unique index **cannot be deferred**, the old row has to be flipped and flushed *before* the new one is inserted. `add_extraction_version` does this, and it first takes `SELECT ... FOR NO KEY UPDATE` on the parent document, so concurrent reprocessing serializes instead of racing for the same version number. NO KEY UPDATE still allows FK inserts into child tables. The flip goes through the ORM, so `lock_version` is bumped and a reviewer still editing the superseded row gets a conflict rather than a silent write to history. The cost is storage: old versions, and their line items, stay forever, and every query must filter `is_current`.
+- **Why:** a CHECK is dropped and re-added in one transactional migration (`NOT VALID` +
+  `VALIDATE` on big tables). An ENUM needs `ALTER TYPE`, and removing a value means
+  recreating the type.
+- **Cost:** the allowed values live in two places, kept in sync by a test.
 
-**Append-only audit tables.** `corrections` and `processing_events` are facts about the past. Triggers enforce append-only in the database (`restrict_violation` on UPDATE), so neither a bug nor an ad-hoc `UPDATE` can rewrite history. `validation_issues` is append-only *in spirit*: re-validation supersedes rows and never deletes them, but it does allow the `resolved_*` and `superseded_at` fields to be set. DELETE is still possible, so document purges and retention jobs work.
+**pgvector inside Postgres instead of a separate vector database.**
 
-**pgvector inside Postgres instead of a separate vector DB.** One system to run, back up and secure. Embeddings sit next to the data they describe, so semantic search can filter and join on document status, soft deletes, supplier and so on in a single query, inside one transaction. There's no dual write and no sync job between the database and a vector store. HNSW gives good recall at our scale: millions of 1024-dim vectors fit comfortably. The trade-offs:
-- HNSW builds are memory-hungry and slow on big tables. Raise `maintenance_work_mem` when building, and use `CREATE INDEX CONCURRENTLY` in later migrations.
-- Filtered vector search can return fewer than `LIMIT` rows. Use `SET hnsw.iterative_scan = relaxed_order` (pgvector ≥ 0.8) or raise `hnsw.ef_search`.
-- Vector work competes with OLTP for the same CPU and RAM.
+- **Why:** one system to run, back up and secure. Semantic search filters and joins on
+  status, soft deletes, supplier and so on in one query, with no dual writes and no sync job.
+- **Costs:**
+  - **Memory-hungry builds:** HNSW builds need a lot of memory (raise
+    `maintenance_work_mem`; use `CREATE INDEX CONCURRENTLY` in later migrations).
+  - **Filtered queries:** a filtered vector query needs iterative scans (see
+    `docs/search.md`).
+  - **Shared resources:** vector work competes with OLTP for the same CPU and RAM.
+- **When to move:** to a dedicated store only if vector volume or QPS outgrows a read
+  replica.
 
-Move to a dedicated vector store only if vector volume or QPS outgrows a read replica.
+**`EMBEDDING_DIM` and `EMBEDDING_SPACES` are schema.**
 
-**`EMBEDDING_DIM` is one constant, and changing it is a migration.** `app.config.EMBEDDING_DIM` (1024 since migration 0003; larger native embeddings are truncated and L2-normalized) sets the column type in the models. Each migration deliberately **hardcodes** its `VECTOR(n)` instead of importing the constant: migrations are snapshots, and importing would silently rewrite history the day the constant changes. To change models, write a migration that drops `ix_chunks_embedding_hnsw`, alters `chunks.embedding` to `VECTOR(<new>)` (after `UPDATE chunks SET embedding = NULL, embedding_model = NULL`), and recreates the index, then re-embed everything (`job_type = 'reembed'`). `test_embedding_dimension_matches_config` fails if the constant and the database disagree. Even at the same dimension, vectors from different models are not comparable, so queries always filter `embedding_space` (see docs/extraction.md).
+- **`EMBEDDING_DIM`** (1024) sets the `VECTOR(n)` type. Changing it needs a migration that
+  alters the column and rebuilds the indexes, plus a full re-embed.
+- **`EMBEDDING_SPACES`** lists the spaces that have a partial HNSW index. `LLMSettings`
+  refuses an embedding model whose space isn't listed, and a new space needs a migration
+  that creates its index.
+- **Migrations hardcode both values and never import them:** migrations are snapshots.
 
-**`'simple'` full-text config.** `tsv` is `to_tsvector('simple', content)`: lower-casing and tokenizing only, with no stemming and no stop words. Invoices are dense with identifiers (`INV-2024-001`, IBANs, SKUs), proper names and mixed languages. Language stemmers mangle these ("ACME Supplies" → "acm suppli") and drop words, and an English stemmer is simply wrong for German or French invoices. The trade-off is weaker recall on natural-language queries ("invoices" doesn't match "invoice"). Semantic search covers that gap in hybrid search, and `pg_trgm` covers fuzzy name matching.
+**The `'simple'` full-text config, with code splitting.**
 
-**Duplicates are stored, not rejected.** `documents.sha256` has a non-unique index. Rejecting on hash would lose information: who re-sent the file, when, through which channel. It would also make the upload API fail on a perfectly normal event, and it only catches byte-identical files. The same invoice re-scanned, or exported to Excel, has a different hash anyway, so real duplicate detection has to happen at the invoice level (`supplier_name_norm`, `invoice_number_norm`, plus trigram similarity) and be **flagged** (a `DUPLICATE_INVOICE` issue, with `duplicate_of_document_id` for byte-identical files) for a human to decide. Legitimate repeats exist too: corrected re-issues and credit notes with the same number.
+- **Why:** invoices are dense with identifiers, names and mixed languages. Stemmers mangle
+  them, and an English stemmer is wrong for German invoices.
+- **The code fix:** the 'simple' parser alone reads `INV-2026-001` as `inv`, `-2026`, `-001`
+  (signed numbers), so neither `2026-001` nor `001` could match. The `tsv` expression
+  therefore reads `-` and `/` between letters or digits as spaces, and queries go through
+  `app.search.keyword.prepare_websearch()`, which applies the same rule and turns codes into
+  phrases.
+- **Trade-off:** weaker recall for natural-language queries ("invoices" doesn't match
+  "invoice"). Semantic search covers that in hybrid mode.
 
-**Sync SQLAlchemy for both API and workers.** Celery workers are synchronous, and an async engine there means managing an event loop per task for no gain. FastAPI runs plain `def` endpoints in a threadpool, so sync DB calls don't block the event loop. One engine and session style means one set of tests and fixtures and no `AsyncSession` and `Session` variants of every helper. Size the pool to the threadpool: FastAPI's default limit is 40 threads, so `DB_POOL_SIZE + DB_MAX_OVERFLOW` should cover the concurrent DB-using requests. The engine uses `pool_pre_ping` and a server-side `statement_timeout` (default 30 s). Celery prefork workers must call `app.db.dispose_engine_after_fork()` in `worker_process_init`.
+**Duplicates are stored, not rejected.**
 
-**Scale plan (not implemented yet).** At thousands of documents per day, with up to ~1,000 pages each, `chunks` and `processing_events` grow fastest. When they get uncomfortable (tens of millions of rows, slow vacuum, painful index rebuilds), range-partition both by month on `created_at`. Old partitions can then be detached or archived cheaply, and each HNSW index stays small. Prerequisites, and the reason this is deferred:
-- In PG16 the primary key and unique constraints of a partitioned table must include the partition key, so the PK becomes `(id, created_at)`. Today no FK points *at* these two tables, which is what keeps that change cheap.
-- HNSW indexes are per partition, so semantic search fans out across partitions.
-- Partitions must be created ahead of time, for example with `pg_partman`.
+- **Why:** rejecting by hash loses who re-sent what, when and how, and it only catches
+  byte-identical files.
+- **How real duplicates are found:** at the invoice level (normalized supplier + number,
+  plus trigram similarity). They are **flagged** for a human to decide.
 
-Before partitioning, simpler steps: a read replica for search, `fillfactor` and autovacuum tuning, and a retention job for `processing_events`.
+**Sync SQLAlchemy for both the API and the workers.** One engine and session style serves
+both. FastAPI runs `def` endpoints in a threadpool, and Celery workers are synchronous.
+
+- **Pool sizing:** size the pool to the threadpool (`DB_POOL_SIZE` + `DB_MAX_OVERFLOW` ≥
+  concurrent DB requests).
+- **Engine settings:** `pool_pre_ping`, and a server-side `statement_timeout`.
+
+## Retention and scale plan (documented, not implemented)
+
+At thousands of documents per day, with up to ~1,000 pages each, `chunks` and
+`processing_events` grow fastest, then `extractions` (versions) and `validation_issues`
+(superseded rows).
+
+**Monthly range partitioning of `processing_events` and `chunks` on `created_at`**, once
+either reaches tens of millions of rows or vacuum and index maintenance start to hurt:
+
+- **Primary keys:** in PG16 a partitioned table's PK and unique constraints must include the
+  partition key, so the PK becomes `(id, created_at)`. No FK points *at* either table,
+  which keeps this cheap.
+- **Per-partition indexes:** HNSW, GIN and partial indexes become per-partition. Smaller
+  graphs build faster and fit in memory. A vector query fans out across partitions (the
+  planner merges them), so bound searches by date where the UI allows.
+- **Creating partitions:** create them ahead of time with `pg_partman`, and detach old ones
+  instead of running a `DELETE`.
+
+**Retention:**
+
+| data | keep | how |
+|---|---|---|
+| `processing_events` | 90 days hot, then archived | detach the monthly partition, `COPY` it to object storage (Parquet/CSV), drop it |
+| superseded extraction versions + their line items | 1 year | nightly job deletes `is_current = false` versions older than a year (their issues cascade); keep rows referenced by `corrections` |
+| superseded `validation_issues` | with their extraction version | cascade |
+| `chunks` of soft-deleted documents | 30 days | purge job deletes them (the documents stay soft-deleted for audit) |
+| soft-deleted `documents` + blobs | per customer contract, default 1 year | hard delete cascades; the blob is removed from storage in the same job |
+| `corrections`, `api_keys` | lifetime of the account | audit trail |
+
+**Before partitioning, cheaper steps:**
+
+- a read replica for search and stats
+- `fillfactor` and autovacuum tuning on `extractions` and `chunks` (frequent updates)
+- the `processing_events` retention job alone
 
 ## Migrations
 
-- `alembic.ini` lives in `backend/`. The URL comes from `DATABASE_URL`, and `compare_type=True` is set.
-- Workflow: `alembic revision --autogenerate -m "..."`, then **hand-review** using the checklist in `script.py.mako`. Autogenerate can't see triggers or functions and often gets these wrong: generated columns, partial indexes, HNSW and GIN operator classes. Enum-like columns render as `sa.Text()`, because migrations never import app types.
-- Every migration must be fully reversible, and none contain data. `test_upgrade_downgrade_upgrade_round_trip` and `test_models_match_migrations` (the equivalent of `alembic check`) enforce this.
-- For big tables use `CREATE INDEX CONCURRENTLY` inside `op.get_context().autocommit_block()`, and `ADD CONSTRAINT ... NOT VALID` followed by `VALIDATE CONSTRAINT`.
+| # | what |
+|---|---|
+| 0001 | initial schema, triggers, extensions |
+| 0002 | unit errors/warnings, document segments |
+| 0003 | extraction job link, `VECTOR(1024)` + `embedding_space`, LLM error codes |
+| 0004 | issue fingerprints, `reconciliation_runs` |
+| 0005 | `api_keys`, one active job per document, `WORKER_TIMEOUT` |
+| 0006 | chunk kinds, `content_sha256`, `embedded_at`, per-space partial HNSW, pending-queue index, customer trigram index, code-splitting `tsv` |
+
+- **Config:** `alembic.ini` lives in `backend/`; the URL comes from `DATABASE_URL`.
+- **Workflow:** run `alembic revision --autogenerate`, then **hand-review** the result.
+  Autogenerate misses triggers, generated columns, partial and expression indexes, and
+  operator classes. Enum-like columns render as `sa.Text()`.
+- **Reversibility:** every migration is fully reversible. The round-trip and
+  models-match-migrations tests enforce this.
 
 ## Example queries
 
-Every `sql` block below is executed against seeded data by `tests/db/test_search.py::test_docs_sql_examples_execute`. Bind parameters use SQLAlchemy `:name` style.
+Every `sql` block below is executed against seeded data by
+`tests/db/test_search.py::test_docs_sql_examples_execute`. Bind parameters use SQLAlchemy
+`:name` style. The application builds these queries with SQLAlchemy in `app/search/`; the
+SQL here shows their shape.
 
 ### Keyword search
+
+`:q` must go through `prepare_websearch()` (codes become phrases of their parts, matching
+the `tsv` expression).
 
 ```sql
 SELECT c.id, c.document_id,
@@ -250,21 +570,24 @@ LIMIT :limit;
 
 ### Semantic search
 
-The `ORDER BY` must be `embedding <=> <constant>` for the HNSW index to be used. Pass the query vector as a bind parameter; don't compute it in a CTE.
+The space is a **literal**, not a bind parameter: it must match a partial index predicate
+at plan time. The `ORDER BY` must be `embedding <=> <constant>` for the HNSW index to be
+used.
 
 ```sql
 SELECT c.id, c.document_id, c.content,
        c.embedding <=> CAST(:query_embedding AS vector) AS cosine_distance
 FROM chunks c
 JOIN documents d ON d.id = c.document_id AND d.deleted_at IS NULL
-WHERE c.embedding_space = :space
+WHERE c.embedding_space = 'nemotron-3.5-8b'
 ORDER BY c.embedding <=> CAST(:query_embedding AS vector)
 LIMIT :limit;
 ```
 
 ### Hybrid search (reciprocal rank fusion)
 
-Take the top 50 from each method, then score each chunk with `1/(60 + rank)` from each list, and sum. RRF needs no score normalization between `ts_rank` and cosine distance.
+Take the top 50 from each method, score each chunk `1/(60 + rank)` per list, and sum. RRF
+needs no score normalization (see `docs/search.md`).
 
 ```sql
 WITH keyword AS (
@@ -282,7 +605,7 @@ semantic AS (
     FROM (
         SELECT c.id, c.embedding <=> CAST(:query_embedding AS vector) AS dist
         FROM chunks c
-        WHERE c.embedding_space = :space
+        WHERE c.embedding_space = 'nemotron-3.5-8b'
         ORDER BY c.embedding <=> CAST(:query_embedding AS vector)
         LIMIT 50
     ) s
@@ -299,6 +622,16 @@ ORDER BY rrf_score DESC
 LIMIT :limit;
 ```
 
+### The embedding work queue
+
+Served by the partial index `ix_chunks_pending_embedding`:
+
+```sql
+SELECT count(*) AS pending_chunks, count(DISTINCT c.document_id) AS documents
+FROM chunks c
+WHERE c.embedding IS NULL;
+```
+
 ### Find duplicate invoices
 
 Byte-identical uploads:
@@ -311,7 +644,8 @@ GROUP BY sha256
 HAVING count(*) > 1;
 ```
 
-The same invoice in different files (uses `ix_extractions_supplier_name_norm_invoice_number_norm`):
+The same invoice in different files (uses
+`ix_extractions_supplier_name_norm_invoice_number_norm`):
 
 ```sql
 SELECT e.supplier_name_norm, e.invoice_number_norm, count(*) AS n,
@@ -324,7 +658,9 @@ GROUP BY e.supplier_name_norm, e.invoice_number_norm
 HAVING count(*) > 1;
 ```
 
-Fuzzy candidates for one invoice: same number, supplier spelled differently (uses the trigram GIN index; `%` matches at `pg_trgm.similarity_threshold`, default 0.3):
+Fuzzy candidates for one invoice: the same number with the supplier spelled differently.
+This uses the trigram GIN index; `%` matches at `pg_trgm.similarity_threshold`, default
+0.3.
 
 ```sql
 SELECT e.id, e.document_id, e.supplier_name, e.total, e.invoice_date,
@@ -370,25 +706,4 @@ FROM documents d
 LEFT JOIN extractions e ON e.document_id = d.id AND e.is_current
 WHERE d.id = :document_id AND d.deleted_at IS NULL
 GROUP BY d.id;
-```
-
-The ORM equivalent (three queries, no N+1):
-
-```python
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload, with_loader_criteria
-
-stmt = (
-    select(Document)
-    .where(Document.id == document_id, Document.deleted_at.is_(None))
-    .options(
-        selectinload(Document.extractions).selectinload(Extraction.validation_issues),
-        with_loader_criteria(Extraction, Extraction.is_current.is_(True)),
-        with_loader_criteria(
-            ValidationIssue,
-            ValidationIssue.superseded_at.is_(None) & ValidationIssue.resolved_at.is_(None),
-        ),
-    )
-)
-doc = session.scalars(stmt).one()
 ```

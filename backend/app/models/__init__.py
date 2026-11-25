@@ -5,6 +5,7 @@ from app.models.base import NAMING_CONVENTION, Base
 from app.models.document import Document, DocumentUnit
 from app.models.enums import (
     ApiRole,
+    ChunkKind,
     DocumentStatus,
     ErrorCode,
     EventStatus,
@@ -39,6 +40,7 @@ __all__ = [
     "ApiRole",
     "Base",
     "Chunk",
+    "ChunkKind",
     "Correction",
     "Document",
     "DocumentStatus",

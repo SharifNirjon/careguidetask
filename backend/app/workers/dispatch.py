@@ -45,8 +45,21 @@ class JobEnqueuer(Protocol):
         """Called only AFTER the reconciliation_runs row is committed."""
         ...
 
+    def enqueue_embedding(self, document_id: uuid.UUID) -> None:
+        """Embed the document's pending chunks (off the critical path; best effort)."""
+        ...
+
 
 class CeleryEnqueuer:
+    def enqueue_embedding(self, document_id: uuid.UUID) -> None:
+        from app.workers import tasks
+
+        tasks.embed_pending.apply_async(
+            kwargs={"document_id": str(document_id)},
+            queue=tasks.QUEUE_LLM,
+            headers={REQUEST_ID_HEADER: current_request_id()},
+        )
+
     def enqueue_reconciliation(self, run_id: uuid.UUID) -> None:
         from app.workers import tasks
 

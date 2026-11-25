@@ -176,67 +176,6 @@ def test_reconciliation_rejects_unknown_documents(client: TestClient, auth: Auth
     assert response.status_code == 422 and response.json()["code"] == "unknown_documents"
 
 
-# ------------------------------------------------------------------ search
-
-
-@pytest.fixture
-def searchable(db_session: Session, container: Container) -> dict[str, uuid.UUID]:
-    acme, _ = seeded_invoice(db_session, container, minutes=1, number="INV-2024-001")
-    globex, _ = seeded_invoice(
-        db_session, container, minutes=2, number="GX-77", supplier="Globex <b>Corp</b>", currency="USD"
-    )
-    broken, _ = mismatched_total(
-        db_session, container, minutes=3, number="INV-2024-999", supplier="Acme Supplies"
-    )
-    return {"acme": acme, "globex": globex, "broken": broken}
-
-
-def _search(client: TestClient, auth: Auth, **params: str) -> list[dict[str, object]]:
-    response = client.get(f"{API}/search", params=params, headers=auth(ApiRole.VIEWER))
-    assert response.status_code == 200, response.text
-    items: list[dict[str, object]] = response.json()["items"]
-    return items
-
-
-def test_keyword_search_ranks_and_highlights(
-    client: TestClient, auth: Auth, searchable: dict[str, uuid.UUID]
-) -> None:
-    hits = _search(client, auth, q="INV-2024-001")
-    assert hits[0]["document_id"] == str(searchable["acme"])
-    assert hits[0]["snippet"] == "Invoice: <mark>INV-2024-001</mark>"
-    assert hits[0]["total"] == "270.0000" and float(str(hits[0]["score"])) == 1.0
-
-
-def test_search_snippets_are_escaped(
-    client: TestClient, auth: Auth, searchable: dict[str, uuid.UUID]
-) -> None:
-    hit = _search(client, auth, q="globex")[0]
-    assert hit["snippet"] == "Supplier: <mark>Globex</mark> &lt;b&gt;Corp&lt;/b&gt;"
-
-
-def test_search_fuzzy_supplier(client: TestClient, auth: Auth, searchable: dict[str, uuid.UUID]) -> None:
-    ids = {h["document_id"] for h in _search(client, auth, q="acme suplies")}
-    assert {str(searchable["acme"]), str(searchable["broken"])} <= ids
-
-
-def test_search_with_filters(client: TestClient, auth: Auth, searchable: dict[str, uuid.UUID]) -> None:
-    hits = _search(client, auth, q="INV-2024", has_open_issues="true", rule_code="TOTAL_MISMATCH")
-    assert [h["document_id"] for h in hits] == [str(searchable["broken"])]
-    assert _search(client, auth, q="INV-2024", currency="USD") == []
-
-
-@pytest.mark.parametrize("mode", ["semantic", "hybrid"])
-def test_semantic_search_is_501(client: TestClient, auth: Auth, mode: str) -> None:
-    response = client.get(f"{API}/search", params={"q": "x", "mode": mode}, headers=auth(ApiRole.VIEWER))
-    assert response.status_code == 501 and response.json()["code"] == "search_mode_not_implemented"
-
-
-def test_search_query_bounds(client: TestClient, auth: Auth) -> None:
-    headers = auth(ApiRole.VIEWER)
-    assert client.get(f"{API}/search", params={"q": "x" * 501}, headers=headers).status_code == 422
-    assert client.get(f"{API}/search", params={"q": ""}, headers=headers).status_code == 422
-
-
 # ------------------------------------------------------------------- stats
 
 

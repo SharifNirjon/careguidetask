@@ -24,12 +24,15 @@ from app.api.app import create_app
 from app.api.container import Container
 from app.api.ratelimit import ApiRateLimiter
 from app.api.services.auth import AuthService
-from app.api.services.search import KeywordSearchService
-from app.config import ApiSettings, PipelineSettings, ValidationSettings
+from app.config import ApiSettings, PipelineSettings, SearchSettings, ValidationSettings
 from app.models.enums import ApiRole
 from app.pipeline.storage import LocalStorage
+from app.search.embedding import EmbedBudget
+from app.search.semantic import QueryEmbedder
+from app.search.service import HybridSearchService
 from app.workers.dispatch import FromStage
 from tests.fixtures import factory
+from tests.search.fakes import FakeEmbeddingClient, StaticQuota
 
 ALLOWED_ORIGIN = "http://frontend.test"
 API = "/api/v1"
@@ -39,6 +42,7 @@ API = "/api/v1"
 class RecordingEnqueuer:
     jobs: list[tuple[uuid.UUID, uuid.UUID, FromStage, bool]] = field(default_factory=list)
     runs: list[uuid.UUID] = field(default_factory=list)
+    embeddings: list[uuid.UUID] = field(default_factory=list)
     fail: bool = False
 
     def enqueue(
@@ -50,6 +54,9 @@ class RecordingEnqueuer:
 
     def enqueue_reconciliation(self, run_id: uuid.UUID) -> None:
         self.runs.append(run_id)
+
+    def enqueue_embedding(self, document_id: uuid.UUID) -> None:
+        self.embeddings.append(document_id)
 
 
 @pytest.fixture(scope="session")
@@ -83,22 +90,36 @@ def api_settings() -> ApiSettings:
 
 
 @pytest.fixture
+def embedding_client() -> FakeEmbeddingClient:
+    return FakeEmbeddingClient()
+
+
+@pytest.fixture
 def make_container(
-    session_factory: sessionmaker[Session], enqueuer: RecordingEnqueuer, tmp_path: Path
+    session_factory: sessionmaker[Session],
+    enqueuer: RecordingEnqueuer,
+    embedding_client: FakeEmbeddingClient,
+    tmp_path: Path,
 ) -> Callable[..., Container]:
     def build(api: ApiSettings, **overrides: Any) -> Container:
         redis = fakeredis.FakeRedis()
+        search = SearchSettings()
+        budget = EmbedBudget(redis, StaticQuota(1000), share=search.embed_quota_share)
+        query_embedder = QueryEmbedder(client=embedding_client, redis=redis, budget=budget, ttl_s=60)
         pipeline = PipelineSettings(storage_root=tmp_path / "storage", max_file_size_mb=2)
         pipeline.storage_root.mkdir(parents=True, exist_ok=True)
         values: dict[str, Any] = {
             "api": api,
             "pipeline": pipeline,
             "validation": ValidationSettings(),
+            "search_settings": search,
             "session_factory": session_factory,
             "redis": redis,
             "storage": LocalStorage(pipeline.storage_root),
             "enqueuer": enqueuer,
-            "search": KeywordSearchService(min_similarity=api.search_min_similarity),
+            "search": HybridSearchService(
+                settings=search, min_similarity=api.search_min_similarity, query_embedder=query_embedder
+            ),
             "rate_limiter": ApiRateLimiter(redis, window_s=api.rate_window_s),
             "health_checks": {"database": lambda: None, "redis": redis.ping, "storage": lambda: None},
         }

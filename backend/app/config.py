@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Final, Literal
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Stored embedding dimension. Models with a larger native dimension are
@@ -25,7 +25,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # database and this constant disagree.
 EMBEDDING_DIM: Final[int] = 1024
 EMBEDDING_MODEL_DEFAULT: Final[str] = "nvidia/nemotron-3.5-embed-8b:free"
-EMBEDDING_SPACE_DEFAULT: Final[str] = "nemotron-8b"
+EMBEDDING_SPACE_DEFAULT: Final[str] = "nemotron-3.5-8b"
+# Every vector space that may be stored. Each one has its own PARTIAL HNSW index
+# (WHERE embedding_space = '<space>'), so this is schema, like EMBEDDING_DIM:
+# adding a space needs a migration that creates its index. LLMSettings refuses
+# an embedding model whose space is not listed here.
+EMBEDDING_SPACES: Final[tuple[str, ...]] = ("nemotron-3.5-8b", "nemotron-3-1b", "nemotron-3.5-1b")
 
 
 def normalize_db_url(url: str) -> str:
@@ -173,6 +178,15 @@ class LLMSettings(BaseSettings):
         ]
     )
     embed_batch_size: int = Field(32, gt=0)
+
+    @field_validator("embedding_models")
+    @classmethod
+    def _spaces_are_indexed(cls, models: list[EmbeddingModelConfig]) -> list[EmbeddingModelConfig]:
+        unknown = {m.space for m in models} - set(EMBEDDING_SPACES)
+        if unknown:
+            raise ValueError(f"embedding spaces {sorted(unknown)} have no HNSW index (see EMBEDDING_SPACES)")
+        return models
+
     embed_chars_per_token: float = Field(2.5, gt=0)  # conservative: caps inputs below the model limit
     embed_input_type_query: str = "search_query"
     embed_input_type_document: str = "search_document"
@@ -312,6 +326,43 @@ def get_validation_settings() -> ValidationSettings:
     return ValidationSettings()
 
 
+class SearchSettings(BaseSettings):
+    """Chunking, embedding budget and ranking (see docs/search.md)."""
+
+    model_config = SettingsConfigDict(env_prefix="", case_sensitive=False, extra="ignore")
+
+    # --- chunking ---
+    chunk_tokens: int = Field(400, gt=0)
+    chunk_overlap_tokens: int = Field(60, ge=0)
+
+    # --- embedding budget ---
+    # Embeddings (documents AND search queries) may spend at most this share of
+    # the daily free-tier budget, so extraction is never starved.
+    embed_quota_share: float = Field(0.3, gt=0, le=1)
+    embed_pending_limit: int = Field(256, gt=0)  # chunks per embed task run
+    embed_sweep_interval_s: int = Field(900, gt=0)  # beat: pick up pending chunks
+    reembed_interval_s: int = Field(3600, gt=0)  # beat: move fallback-space chunks to the primary
+    reembed_batch_limit: int = Field(128, gt=0)
+    query_embed_cache_ttl_s: int = Field(7 * 24 * 3600, gt=0)
+
+    # --- ranking ---
+    search_ef: int = Field(100, ge=1, le=1000)  # hnsw.ef_search per query
+    # Depth of each list before fusion; >= max_search_results so every page is reachable.
+    candidates_per_list: int = Field(200, gt=0)
+    rrf_k: int = Field(60, gt=0)
+    max_search_results: int = Field(200, gt=0)  # offset + limit cap
+    invoice_number_boost: float = Field(1.0, ge=0)  # added to the fused score of an exact number match
+
+    @property
+    def chunk_overlap(self) -> int:
+        return min(self.chunk_overlap_tokens, self.chunk_tokens // 2)
+
+
+@lru_cache(maxsize=1)
+def get_search_settings() -> SearchSettings:
+    return SearchSettings()
+
+
 class ApiSettings(BaseSettings):
     """REST API limits, security toggles and ops knobs (all env-overridable)."""
 
@@ -331,6 +382,7 @@ class ApiSettings(BaseSettings):
     upload_rpm: int = Field(30, gt=0)
     write_rpm: int = Field(120, gt=0)
     read_rpm: int = Field(600, gt=0)
+    search_rpm: int = Field(60, gt=0)  # stricter than reads: semantic queries spend embedding quota
     rate_window_s: float = Field(60.0, gt=0)
 
     # --- pagination / previews / search ---

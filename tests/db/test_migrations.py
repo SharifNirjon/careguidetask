@@ -128,7 +128,7 @@ def test_enum_checks_match_python_enums(engine: Engine) -> None:
                 db_values = set(re.findall(r"'([^']+)'", definition))
                 assert db_values == {m.value for m in col.type.enum_cls}, (table.name, col.name)
                 checked += 1
-    assert checked == 17  # update when adding an enum-like column
+    assert checked == 18  # update when adding an enum-like column
 
 
 def test_special_indexes_and_generated_column(engine: Engine) -> None:
@@ -142,14 +142,22 @@ def test_special_indexes_and_generated_column(engine: Engine) -> None:
                 "WHERE table_name = 'chunks' AND column_name = 'tsv' AND is_generated = 'ALWAYS'"
             )
         )
-    assert "USING hnsw (embedding vector_cosine_ops)" in idx["ix_chunks_embedding_hnsw"]
+    from app.config import EMBEDDING_SPACES
+    from app.models.search import hnsw_index_name
+
+    for space in EMBEDDING_SPACES:  # one PARTIAL HNSW index per space
+        definition = idx[hnsw_index_name(space)]
+        assert "USING hnsw (embedding vector_cosine_ops)" in definition
+        assert f"WHERE (embedding_space = '{space}'::text)" in definition
+    assert "ix_chunks_embedding_hnsw" not in idx
     assert "USING gin (tsv)" in idx["ix_chunks_tsv"]
     assert "gin_trgm_ops" in idx["ix_extractions_supplier_name_norm_trgm"]
     assert idx["uq_extractions_document_id_invoice_index_current"].startswith("CREATE UNIQUE")
     assert "WHERE is_current" in idx["uq_extractions_document_id_invoice_index_current"]
     assert "WHERE (superseded_at IS NULL)" in idx["ix_validation_issues_extraction_id_active"]
     assert "created_at DESC" in idx["ix_documents_status_created_at"]
-    assert tsv_generated == "to_tsvector('simple'::regconfig, content)"
+    # '-' and '/' between letters/digits read as spaces (see app.models.search.TSV_EXPRESSION)
+    assert tsv_generated.startswith("to_tsvector('simple'::regconfig, regexp_replace(content,")
 
 
 def test_session_module_applies_statement_timeout(test_url: URL, monkeypatch) -> None:

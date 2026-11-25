@@ -12,7 +12,6 @@ from app.api.pagination import decode_cursor, encode_cursor
 from app.api.routers.documents import content_disposition
 from app.api.services.corrections import parse_if_match
 from app.api.services.progress import EventView, JobView, compute_progress
-from app.api.services.search import build_snippet, highlight
 from app.models.enums import EventStatus, JobStatus, JobType, Stage
 
 T0 = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
@@ -90,18 +89,6 @@ def test_progress_done_and_no_job() -> None:
     assert (done.stage, done.percent, done.elapsed_ms, done.stages_total) == (None, 100, 9000, 1)
     nothing = compute_progress(None, [], units_total=None, now=T0)
     assert nothing.percent == 0 and nothing.stage is None
-
-
-def test_highlight_escapes_everything_but_mark() -> None:
-    assert highlight("<script>INV-1</script>", "inv-1") == "&lt;script&gt;<mark>INV-1</mark>&lt;/script&gt;"
-    assert highlight("a&b", "zzz") == "a&amp;b"
-
-
-def test_snippet_prefers_the_matching_field() -> None:
-    values = {"invoice_number": "INV-9", "supplier_name": "Acme", "customer_name": "Clinic North"}
-    assert build_snippet(values, "north") == "Customer: Clinic <mark>North</mark>"
-    assert build_snippet(values, "zzz") == "Invoice: INV-9"
-    assert build_snippet({}, "x") == ""
 
 
 def test_content_disposition_cannot_inject_headers() -> None:

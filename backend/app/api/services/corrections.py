@@ -12,6 +12,7 @@ corrected total is parsed exactly like an extracted one. Ambiguous input
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -38,8 +39,11 @@ from app.extraction.assemble import NormContext, normalize_value
 from app.extraction.normalize import invoice_number_norm, supplier_name_norm
 from app.models import Correction, Document, Extraction, LineItem
 from app.models.enums import FieldSource
+from app.search.indexer import ChunkIndexer
 from app.validation.policy import Trigger
 from app.validation.repository import ValidationRepository
+
+log = logging.getLogger(__name__)
 
 MANUAL_CONFIDENCE: Final = 1.0
 LINE_VALUE_FIELDS: Final = ("description", "quantity", "unit_price", "amount", "tax_rate")
@@ -143,13 +147,26 @@ class CorrectionService:
             self._session.flush()
             self._c.validation_service().validate_in(self._session, extraction.id, trigger=Trigger.CORRECTION)
             ValidationRepository(self._session).refresh_document_status(extraction.document_id)
+            # The summary chunk mirrors the corrected fields (same transaction, so search
+            # never shows the old value next to the new one).
+            ChunkIndexer(self._session, self._c.search_settings).rebuild_summary(extraction.id)
             self._session.commit()
         except StaleDataError as exc:
             self._session.rollback()
             raise PreconditionFailed(
                 "The extraction was changed concurrently; reload and retry.", code="version_mismatch"
             ) from exc
+        self._schedule_embedding(extraction.document_id)
         return self._result(extraction)
+
+    def _schedule_embedding(self, document_id: uuid.UUID) -> None:
+        """Best effort: the beat sweep embeds pending chunks anyway."""
+        try:
+            self._c.enqueuer.enqueue_embedding(document_id)
+        except Exception:
+            log.warning(
+                "could not schedule embedding", extra={"document_id": str(document_id)}, exc_info=True
+            )
 
     # ------------------------------------------------------------ helpers
 

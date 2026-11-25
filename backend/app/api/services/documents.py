@@ -31,7 +31,7 @@ from app.api.schemas.documents import (
 from app.api.schemas.documents import IssueCounts as IssueCountsOut
 from app.api.schemas.results import DocumentResults
 from app.api.services import views
-from app.api.services.filters import DocumentFilters, SortField, SortOrder
+from app.api.services.filters import SortField, SortOrder
 from app.api.services.idempotency import IdempotencyStore
 from app.api.services.progress import EventView, JobView, compute_progress
 from app.models import Document, Extraction
@@ -41,6 +41,7 @@ from app.pipeline.intake import ingest_file
 from app.pipeline.preview import render_png
 from app.pipeline.storage import derived_key
 from app.pipeline.types import FileKind
+from app.search.filters import DocumentFilters
 from app.workers.dispatch import FromStage
 
 log = logging.getLogger(__name__)

@@ -5,6 +5,7 @@
     python -m app.cli extract <document_id> [--force]
     python -m app.cli api-key create --name NAME --role viewer|reviewer|admin
     python -m app.cli api-key revoke <key-or-prefix>
+    python -m app.cli reembed --from-space nemotron-3-1b [--limit N]
 
 Without --sync the documents are enqueued to Celery; with --sync the whole
 pipeline runs inline and a summary table is printed.
@@ -26,6 +27,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app import cli_llm
+from app.config import EMBEDDING_SPACES
 from app.logging_setup import configure_logging
 from app.models import ApiRole, Document, DocumentUnit
 from app.pipeline import orchestrator
@@ -158,6 +160,34 @@ def api_key_command(action: str, *, name: str | None, role: str | None, key: str
     return 1
 
 
+def reembed_command(from_space: str, limit: int) -> int:
+    """Move fallback-space chunks to the primary space (same code as the beat task)."""
+    from redis import Redis
+
+    from app.config import get_llm_settings, get_search_settings
+    from app.db.session import get_sessionmaker
+    from app.search.runtime import build_runtime
+
+    llm = get_llm_settings()
+    runtime = build_runtime(llm, get_search_settings(), Redis.from_url(llm.redis_url))
+    report = runtime.reembedder(get_sessionmaker(), llm.embed_batch_size).run(
+        from_spaces=[from_space], limit=limit
+    )
+    print_rows(
+        ["from_space", "to_space", "selected", "moved", "note"],
+        [
+            [
+                from_space,
+                runtime.primary_space,
+                str(report.selected),
+                str(report.moved),
+                report.skipped_reason or "-",
+            ]
+        ],
+    )
+    return 0 if report.skipped_reason is None else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -177,11 +207,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     create.add_argument("--role", required=True, choices=[r.value for r in ApiRole])
     revoke = key_sub.add_parser("revoke")
     revoke.add_argument("key", help="the key or its prefix (cg_xxxxxxxx)")
+    re_embed = sub.add_parser("reembed", help="move chunks from a fallback embedding space to the primary")
+    re_embed.add_argument("--from-space", required=True, choices=list(EMBEDDING_SPACES))
+    re_embed.add_argument("--limit", type=int, default=1000)
     args = parser.parse_args(argv)
 
     configure_logging(logging.WARNING)  # keep the tables readable; JSON logs go to stderr
     if args.command == "llm-check":
         return cli_llm.llm_check(probe=args.probe, print_rows=print_rows)
+    if args.command == "reembed":
+        return reembed_command(args.from_space, args.limit)
     if args.command == "api-key":
         return api_key_command(
             args.action,

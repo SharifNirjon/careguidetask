@@ -16,6 +16,8 @@ from tests.support.llm import (
     EMBED_OTHER,
     EMBED_PRIMARY,
     EMBED_SAME_SPACE,
+    SPACE_BIG,
+    SPACE_SMALL,
     GatewayKit,
     embed_body,
     sent_json,
@@ -57,13 +59,13 @@ def test_vectors_are_truncated_and_l2_normalized(kit: GatewayKit, router: respx.
     for vector in result.vectors:
         assert len(vector) == EMBEDDING_DIM
         assert math.sqrt(sum(v * v for v in vector)) == pytest.approx(1.0)
-    assert (result.space, result.is_primary_space, result.model_used) == ("big", True, EMBED_PRIMARY)
+    assert (result.space, result.is_primary_space, result.model_used) == (SPACE_BIG, True, EMBED_PRIMARY)
 
 
 def test_cross_space_fallback_is_tagged(kit: GatewayKit, router: respx.MockRouter) -> None:
     router.post("/embeddings").mock(side_effect=_by_model({EMBED_OTHER: httpx.Response(200)}))
     result = kit.gateways.embeddings.embed(["a"], input_type="document")
-    assert result.space == "small" and result.is_primary_space is False
+    assert result.space == SPACE_SMALL and result.is_primary_space is False
     assert result.model_used == EMBED_OTHER
 
 
@@ -80,7 +82,7 @@ def test_same_space_fallback_reuses_finished_batches(kit: GatewayKit, router: re
     result = kit.gateways.embeddings.embed([f"c{i}" for i in range(40)], input_type="document")
     models = [sent_json(c)["model"] for c in route.calls]
     assert models == [EMBED_PRIMARY] * 4 + [EMBED_SAME_SPACE]  # batch 1 not re-embedded
-    assert result.space == "big" and result.model_used == f"{EMBED_PRIMARY},{EMBED_SAME_SPACE}"
+    assert result.space == SPACE_BIG and result.model_used == f"{EMBED_PRIMARY},{EMBED_SAME_SPACE}"
 
 
 def test_native_dimension_below_target_fails_fast(kit: GatewayKit, router: respx.MockRouter) -> None:

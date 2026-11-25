@@ -23,6 +23,9 @@ FALLBACK = "vendor/fallback:free"
 EMBED_PRIMARY = "vendor/embed-big:free"
 EMBED_SAME_SPACE = "vendor/embed-big-mirror:free"
 EMBED_OTHER = "vendor/embed-small:free"
+# Real, indexed space names (LLMSettings rejects spaces without an HNSW index).
+SPACE_BIG = "nemotron-3.5-8b"
+SPACE_SMALL = "nemotron-3-1b"
 START = datetime(2026, 3, 1, 12, 0, tzinfo=UTC).timestamp()
 
 
@@ -80,9 +83,9 @@ def llm_test_settings(**overrides: Any) -> LLMSettings:
         "llm_primary_model": PRIMARY,
         "llm_fallback_models": [FALLBACK],
         "embedding_models": [
-            EmbeddingModelConfig(model=EMBED_PRIMARY, space="big"),
-            EmbeddingModelConfig(model=EMBED_SAME_SPACE, space="big"),
-            EmbeddingModelConfig(model=EMBED_OTHER, space="small"),
+            EmbeddingModelConfig(model=EMBED_PRIMARY, space=SPACE_BIG),
+            EmbeddingModelConfig(model=EMBED_SAME_SPACE, space=SPACE_BIG),
+            EmbeddingModelConfig(model=EMBED_OTHER, space=SPACE_SMALL),
         ],
         "llm_backoff_base_s": 1.0,
         "free_model_daily_limit": 50,

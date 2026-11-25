@@ -26,13 +26,14 @@ from app.api.schemas.ops import (
     RunOut,
     SearchHitOut,
     SearchResponse,
+    SegmentOut,
     StatsOut,
     Throughput,
 )
-from app.api.services.search import SearchQuery
 from app.models import Document, ReconciliationRun
 from app.models.enums import RunStatus
 from app.pipeline.types import FileKind
+from app.search.types import SearchQuery
 
 log = logging.getLogger(__name__)
 
@@ -87,15 +88,23 @@ class ReconciliationApiService:
 
 
 def search(session: Session, container: Container, query: SearchQuery) -> SearchResponse:
-    hits = container.search.search(session, query)
+    result = container.search.search(session, query)
     return SearchResponse(
         mode=query.mode,
+        total=result.total,
+        offset=query.offset,
+        limit=query.limit,
+        degraded=result.degraded,
+        degraded_reason=result.degraded_reason,
         items=[
             SearchHitOut(
                 document_id=h.document_id,
                 extraction_id=h.extraction_id,
                 score=h.score,
-                snippet=h.snippet,
+                match_type=h.match_type,
+                unit_index=h.unit_index,
+                filename=h.filename,
+                snippet_segments=[SegmentOut(text=s.text, highlight=s.highlight) for s in h.snippet],
                 invoice_number=h.invoice_number,
                 invoice_date=h.invoice_date,
                 supplier_name=h.supplier_name,
@@ -104,7 +113,7 @@ def search(session: Session, container: Container, query: SearchQuery) -> Search
                 currency=h.currency,
                 review_status=h.review_status,
             )
-            for h in hits
+            for h in result.hits
         ],
     )
 

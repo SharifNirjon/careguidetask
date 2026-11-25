@@ -19,7 +19,13 @@ from celery import Task, chord
 from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy.exc import OperationalError
 
-from app.config import get_api_settings, get_pipeline_settings, get_validation_settings
+from app.config import (
+    get_api_settings,
+    get_llm_settings,
+    get_pipeline_settings,
+    get_search_settings,
+    get_validation_settings,
+)
 from app.db.session import get_sessionmaker
 from app.logging_setup import current_request_id
 from app.models import DocumentStatus, Stage
@@ -201,3 +207,54 @@ def sweep() -> dict[str, int]:
         max_runtime=timedelta(minutes=api.job_max_runtime_minutes),
     ).run()
     return {"requeued": len(report.requeued), "timed_out": len(report.timed_out)}
+
+
+def _search_runtime() -> Any:
+    from redis import Redis
+
+    from app.search.runtime import build_runtime
+
+    llm = get_llm_settings()
+    return build_runtime(llm, get_search_settings(), Redis.from_url(llm.redis_url))
+
+
+@celery_app.task(name="search.embed_pending", acks_late=True)
+def embed_pending(document_id: str | None = None) -> dict[str, Any]:
+    """Embed pending chunks (one document after processing, or the whole queue
+    from the beat sweep). Out of quota: the chunks simply stay pending, keyword
+    search keeps working, and the next sweep after the UTC reset resumes. Never
+    fails a document; never retried in a loop."""
+    search = get_search_settings()
+    embedder = _search_runtime().chunk_embedder(get_sessionmaker(), get_llm_settings().embed_batch_size)
+    report = embedder.embed_pending(
+        document_id=uuid.UUID(document_id) if document_id else None, limit=search.embed_pending_limit
+    )
+    if report.deferred or report.error:
+        log.info(
+            "embedding deferred",
+            extra={
+                "document_id": document_id,
+                "embedded": report.embedded,
+                "deferred_until": report.deferred_until.isoformat() if report.deferred_until else None,
+                "error": report.error,
+            },
+        )
+    return {
+        "embedded": report.embedded,
+        "requests": report.requests,
+        "deferred": report.deferred,
+        "error": report.error,
+    }
+
+
+@celery_app.task(name="search.reembed", acks_late=True)
+def reembed(from_space: str | None = None, limit: int | None = None) -> dict[str, Any]:
+    """Move fallback-space chunks to the primary space (low priority, beat)."""
+    llm, search = get_llm_settings(), get_search_settings()
+    spaces = [from_space] if from_space else [m.space for m in llm.embedding_models[1:]]
+    report = (
+        _search_runtime()
+        .reembedder(get_sessionmaker(), llm.embed_batch_size)
+        .run(from_spaces=spaces, limit=limit or search.reembed_batch_limit)
+    )
+    return {"selected": report.selected, "moved": report.moved, "skipped": report.skipped_reason}

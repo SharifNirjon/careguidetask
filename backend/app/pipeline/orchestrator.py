@@ -35,9 +35,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import (
     PipelineSettings,
+    SearchSettings,
     get_extraction_settings,
     get_llm_settings,
     get_pipeline_settings,
+    get_search_settings,
     get_validation_settings,
 )
 from app.db.session import get_sessionmaker
@@ -65,6 +67,7 @@ from app.pipeline.ocr.tesseract import TesseractEngine
 from app.pipeline.segment import HeuristicSegmenter, Segmenter, segment_document
 from app.pipeline.storage import LocalStorage, Storage
 from app.pipeline.types import FileKind, ParsedUnit
+from app.search.indexer import ChunkIndexer
 from app.validation.policy import Trigger
 from app.validation.service import DocumentValidation, ValidationService
 
@@ -90,6 +93,9 @@ class PipelineContext:
     segmenter: Segmenter = field(default_factory=HeuristicSegmenter)
     extractor: DocumentExtractor | None = None  # None: the extract stage is skipped
     validator: DocumentValidator | None = None  # None: the validate stage is skipped
+    search: SearchSettings | None = None  # None: no search chunks are written
+    # Called AFTER the document's final commit; embedding runs off the critical path.
+    schedule_embedding: Callable[[uuid.UUID], None] | None = None
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -124,7 +130,15 @@ def default_context() -> PipelineContext:
         settings=settings,
         extractor=extractor,
         validator=ValidationService(session_factory=session_factory, settings=get_validation_settings()),
+        search=get_search_settings(),
+        schedule_embedding=_celery_embedding,
     )
+
+
+def _celery_embedding(document_id: uuid.UUID) -> None:
+    from app.workers.dispatch import CeleryEnqueuer  # lazy: the orchestrator must not import Celery tasks
+
+    CeleryEnqueuer().enqueue_embedding(document_id)
 
 
 def _now() -> datetime:
@@ -468,13 +482,34 @@ def run_validate_stage(
     }
 
 
-def not_implemented_stage(step: str) -> StageFn:
-    def stub(
-        session: Session, doc: Document, stats: UnitStats, ctx: PipelineContext
-    ) -> tuple[EventStatus, dict[str, Any]]:
-        return EventStatus.SKIPPED, {"reason": f"not implemented yet ({step})"}
+def run_index_stage(
+    session: Session, doc: Document, stats: UnitStats, ctx: PipelineContext
+) -> tuple[EventStatus, dict[str, Any]]:
+    """Write the search chunks (no network). Vectors come later, from the embed task.
 
-    return stub
+    The index is derived data: a failure here is recorded but never fails the
+    document (the SAVEPOINT keeps the outer transaction usable).
+    """
+    if ctx.search is None:
+        return EventStatus.SKIPPED, {"reason": "search indexing not configured"}
+    try:
+        with session.begin_nested():
+            report = ChunkIndexer(session, ctx.search).rebuild_document(doc.id)
+    except Exception as exc:
+        log.warning("search indexing failed", extra={"document_id": str(doc.id), "error": type(exc).__name__})
+        return EventStatus.FAILED, {"error_type": type(exc).__name__}
+    return EventStatus.SUCCEEDED, report.to_details()
+
+
+def schedule_embedding(ctx: PipelineContext, document_id: uuid.UUID) -> None:
+    """After the final commit. A broker hiccup only delays vectors: the beat sweep
+    embeds pending chunks anyway, and keyword search works without them."""
+    if ctx.schedule_embedding is None:
+        return
+    try:
+        ctx.schedule_embedding(document_id)
+    except Exception:
+        log.warning("could not schedule embedding", extra={"document_id": str(document_id)}, exc_info=True)
 
 
 # Order: ingest -> parse -> [PARSE_TAIL_STAGES] -> extract -> [POST_EXTRACT_STAGES].
@@ -482,7 +517,7 @@ def not_implemented_stage(step: str) -> StageFn:
 PARSE_TAIL_STAGES: list[tuple[Stage, StageFn]] = [(Stage.SEGMENT, run_segment_stage)]
 POST_EXTRACT_STAGES: list[tuple[Stage, StageFn]] = [
     (Stage.VALIDATE, run_validate_stage),
-    (Stage.EMBED, not_implemented_stage("Step 7")),
+    (Stage.EMBED, run_index_stage),  # chunks only; vectors are embedded asynchronously
 ]
 
 
@@ -577,6 +612,7 @@ def run_llm_stages(
     log.info(
         "document finished", extra={**_log_extra(document_id, job_id, Stage.EMBED), "status": final.value}
     )
+    schedule_embedding(ctx, document_id)
     return final
 
 
@@ -742,7 +778,9 @@ __all__ = [
     "parse_batch",
     "record_event",
     "run_document",
+    "run_index_stage",
     "run_llm_stages",
     "run_validation_only",
+    "schedule_embedding",
     "upsert_units",
 ]

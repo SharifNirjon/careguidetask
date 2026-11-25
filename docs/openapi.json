@@ -1879,6 +1879,15 @@
         "title": "MatchMethod",
         "type": "string"
       },
+      "MatchType": {
+        "enum": [
+          "keyword",
+          "semantic",
+          "both"
+        ],
+        "title": "MatchType",
+        "type": "string"
+      },
       "Page_DocumentSummary_": {
         "additionalProperties": false,
         "properties": {
@@ -2469,8 +2478,20 @@
             "type": "string"
           },
           "extraction_id": {
-            "format": "uuid",
-            "title": "Extraction Id",
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null when the hit can't be tied to one invoice.",
+            "title": "Extraction Id"
+          },
+          "filename": {
+            "title": "Filename",
             "type": "string"
           },
           "invoice_date": {
@@ -2496,8 +2517,18 @@
             ],
             "title": "Invoice Number"
           },
+          "match_type": {
+            "$ref": "#/components/schemas/MatchType"
+          },
           "review_status": {
-            "$ref": "#/components/schemas/ReviewStatus"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "score": {
             "maximum": 1.0,
@@ -2505,10 +2536,12 @@
             "title": "Score",
             "type": "number"
           },
-          "snippet": {
-            "description": "HTML-escaped; the match is wrapped in <mark>.",
-            "title": "Snippet",
-            "type": "string"
+          "snippet_segments": {
+            "items": {
+              "$ref": "#/components/schemas/SegmentOut"
+            },
+            "title": "Snippet Segments",
+            "type": "array"
           },
           "supplier_name": {
             "anyOf": [
@@ -2535,13 +2568,28 @@
               }
             ],
             "title": "Total"
+          },
+          "unit_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Page / frame / sheet of the best match (for the preview).",
+            "title": "Unit Index"
           }
         },
         "required": [
           "document_id",
           "extraction_id",
           "score",
-          "snippet",
+          "match_type",
+          "unit_index",
+          "snippet_segments",
+          "filename",
           "invoice_number",
           "invoice_date",
           "supplier_name",
@@ -2565,6 +2613,22 @@
       "SearchResponse": {
         "additionalProperties": false,
         "properties": {
+          "degraded": {
+            "description": "true: semantic ranking was unavailable; these are keyword results.",
+            "title": "Degraded",
+            "type": "boolean"
+          },
+          "degraded_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Degraded Reason"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/SearchHitOut"
@@ -2572,15 +2636,52 @@
             "title": "Items",
             "type": "array"
           },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
           "mode": {
             "$ref": "#/components/schemas/SearchMode"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "description": "Ranked results available (capped at MAX_SEARCH_RESULTS).",
+            "title": "Total",
+            "type": "integer"
           }
         },
         "required": [
           "mode",
-          "items"
+          "items",
+          "total",
+          "offset",
+          "limit",
+          "degraded"
         ],
         "title": "SearchResponse",
+        "type": "object"
+      },
+      "SegmentOut": {
+        "additionalProperties": false,
+        "description": "Render as TEXT (never as HTML); emphasize when highlight is true.",
+        "properties": {
+          "highlight": {
+            "title": "Highlight",
+            "type": "boolean"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "highlight"
+        ],
+        "title": "SegmentOut",
         "type": "object"
       },
       "Severity": {
@@ -5310,7 +5411,7 @@
     },
     "/api/v1/search": {
       "get": {
-        "description": "keyword: trigram/ILIKE over invoice number, supplier and customer, plus the same filters as GET /documents. semantic / hybrid return 501 until Step 7.",
+        "description": "keyword: full text over document chunks (\"phrases\", OR, -exclusion) plus invoice number, supplier and customer matches. semantic: vector similarity. hybrid (default): both, fused with Reciprocal Rank Fusion. Same filters as GET /documents. If the query can't be embedded (quota, outage), semantic and hybrid return keyword results with degraded=true. Snippets are structured text segments, never HTML. Stricter rate limit (SEARCH_RPM): semantic queries spend embedding quota.",
         "operationId": "search_invoices_api_v1_search_get",
         "parameters": [
           {
@@ -5330,7 +5431,7 @@
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/SearchMode",
-              "default": "keyword"
+              "default": "hybrid"
             }
           },
           {
@@ -5344,6 +5445,20 @@
               "maximum": 100,
               "minimum": 1,
               "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Ranked results to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Ranked results to skip.",
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Offset",
               "type": "integer"
             }
           },
@@ -5673,17 +5788,6 @@
               "application/problem+json": {}
             },
             "description": "Rate limit exceeded (see Retry-After)"
-          },
-          "501": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetail"
-                }
-              },
-              "application/problem+json": {}
-            },
-            "description": "Not implemented yet"
           }
         },
         "security": [

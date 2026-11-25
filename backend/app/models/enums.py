@@ -111,6 +111,11 @@ class Severity(StrEnum):
     INFO = "info"
 
 
+class ChunkKind(StrEnum):
+    CONTENT = "content"  # text of one document unit (page / frame / sheet rows)
+    EXTRACTION_SUMMARY = "extraction_summary"  # normalized fields of one current extraction
+
+
 class JobType(StrEnum):
     FULL = "full"
     REPROCESS = "reprocess"

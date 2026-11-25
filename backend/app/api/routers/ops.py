@@ -8,16 +8,16 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query, status
 from fastapi.responses import JSONResponse
 
-from app.api.deps import AdminRead, AdminWrite, ContainerDep, ReviewerWrite, SessionDep, Viewer
+from app.api.deps import AdminRead, AdminWrite, ContainerDep, ReviewerWrite, Searcher, SessionDep, Viewer
 from app.api.errors import FieldError, ValidationFailed
 from app.api.routers.params import PAGE_DEFAULT, Limit, document_filters
 from app.api.schemas.common import problems
 from app.api.schemas.jobs import BulkReprocessRequest, BulkReprocessResponse, JobOut
 from app.api.schemas.ops import HealthOut, ReconciliationRequest, RunCreated, RunOut, SearchResponse, StatsOut
 from app.api.services import ops
-from app.api.services.filters import DocumentFilters
 from app.api.services.jobs import JobService
-from app.api.services.search import SearchMode, SearchQuery
+from app.search.filters import DocumentFilters
+from app.search.types import SearchMode, SearchQuery
 
 jobs = APIRouter(prefix="/jobs", tags=["jobs"])
 reconciliations = APIRouter(prefix="/reconciliations", tags=["reconciliations"])
@@ -25,6 +25,7 @@ search = APIRouter(tags=["search"])
 health = APIRouter(prefix="/health", tags=["health"])
 
 SEARCH_HARD_MAX_CHARS = 500
+SEARCH_HARD_MAX_OFFSET = 10_000  # schema bound; the real cap is MAX_SEARCH_RESULTS
 
 
 @jobs.post(
@@ -75,18 +76,24 @@ def get_reconciliation(
     "/search",
     response_model=SearchResponse,
     summary="Search invoices",
-    description="keyword: trigram/ILIKE over invoice number, supplier and customer, plus the same filters "
-    "as GET /documents. semantic / hybrid return 501 until Step 7.",
-    responses=problems(403, 501),
+    description=(
+        'keyword: full text over document chunks ("phrases", OR, -exclusion) plus invoice number, '
+        "supplier and customer matches. semantic: vector similarity. hybrid (default): both, fused with "
+        "Reciprocal Rank Fusion. Same filters as GET /documents. If the query can't be embedded (quota, "
+        "outage), semantic and hybrid return keyword results with degraded=true. Snippets are structured "
+        "text segments, never HTML. Stricter rate limit (SEARCH_RPM): semantic queries spend embedding quota."
+    ),
+    responses=problems(403),
 )
 def search_invoices(
-    _: Viewer,
+    _: Searcher,
     session: SessionDep,
     container: ContainerDep,
     filters: Annotated[DocumentFilters, Depends(document_filters)],
     q: Annotated[str, Query(min_length=1, max_length=SEARCH_HARD_MAX_CHARS)],
-    mode: SearchMode = SearchMode.KEYWORD,
+    mode: SearchMode = SearchMode.HYBRID,
     limit: Limit = PAGE_DEFAULT,
+    offset: Annotated[int, Query(ge=0, le=SEARCH_HARD_MAX_OFFSET, description="Ranked results to skip.")] = 0,
 ) -> SearchResponse:
     if len(q) > container.api.search_query_max_chars:
         raise ValidationFailed(
@@ -94,7 +101,15 @@ def search_invoices(
             code="query_too_long",
             errors=[FieldError(("query", "q"), "too long", "string_too_long")],
         )
-    return ops.search(session, container, SearchQuery(text=q, mode=mode, filters=filters, limit=limit))
+    cap = container.search_settings.max_search_results
+    if offset + limit > cap:
+        raise ValidationFailed(
+            f"Search results are capped at {cap}: offset + limit must not exceed it.",
+            code="offset_out_of_range",
+            errors=[FieldError(("query", "offset"), f"offset + limit > {cap}", "less_than_equal")],
+        )
+    query = SearchQuery(text=q, mode=mode, filters=filters, limit=limit, offset=offset)
+    return ops.search(session, container, query)
 
 
 @search.get(

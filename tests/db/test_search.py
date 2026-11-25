@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 from app.config import EMBEDDING_DIM, EMBEDDING_MODEL_DEFAULT, EMBEDDING_SPACE_DEFAULT
 from app.db.seed import fake_embedding, seed
 from app.models import Chunk, Document, Extraction
+from app.models.search import hnsw_index_name
+from app.search.keyword import prepare_websearch
 from tests.db.factories import make_document, make_unit
 
 DOCS = Path(__file__).resolve().parents[2] / "docs" / "database.md"
@@ -43,7 +45,10 @@ def test_keyword_search_matches_invoice_codes(db: Session) -> None:
     hit = _chunk(db, "Invoice INV-2024-001 from ACME Supplies")
     _chunk(db, "Invoice INV-2024-777 from Globex")
     q = text("SELECT id FROM chunks WHERE tsv @@ websearch_to_tsquery('simple', :q)")
-    assert db.scalars(q, {"q": "INV-2024-001"}).all() == [hit.id]
+    # Queries go through prepare_websearch(): codes become phrases of their parts,
+    # matching how chunks.tsv tokenizes them.
+    assert db.scalars(q, {"q": prepare_websearch("INV-2024-001")}).all() == [hit.id]
+    assert db.scalars(q, {"q": prepare_websearch("2024-001")}).all() == [hit.id]
     assert db.scalars(q, {"q": "acme"}).all() == [hit.id]  # case-insensitive
 
 
@@ -79,11 +84,15 @@ def test_hnsw_index_is_usable_for_knn(db: Session) -> None:
     db.execute(text("SET LOCAL enable_seqscan = off"))
     plan = "\n".join(
         db.scalars(
-            text("EXPLAIN SELECT id FROM chunks ORDER BY embedding <=> CAST(:v AS vector) LIMIT 5"),
-            {"v": str(_basis(0))},
+            text(
+                "EXPLAIN SELECT id FROM chunks WHERE embedding_space = :space "
+                "ORDER BY embedding <=> CAST(:v AS vector) LIMIT 5"
+            ),
+            {"v": str(_basis(0)), "space": EMBEDDING_SPACE_DEFAULT},
         ).all()
     )
-    assert "ix_chunks_embedding_hnsw" in plan
+    # Partial per-space index: only usable when the query names its space.
+    assert hnsw_index_name(EMBEDDING_SPACE_DEFAULT) in plan
 
 
 def test_trigram_fuzzy_supplier_match(db: Session) -> None:
@@ -117,7 +126,7 @@ def test_docs_sql_examples_execute(db: Session) -> None:
     pdf_id = db.scalar(select(Document.id).where(Document.storage_key == "seed/acme_invoices_march.pdf"))
     page0 = db.scalar(select(Chunk.content).where(Chunk.document_id == pdf_id, Chunk.chunk_index == 0))
     params = {
-        "q": "INV-2024-001",
+        "q": prepare_websearch("INV-2024-001"),
         "query_embedding": str(fake_embedding(page0)),
         "space": EMBEDDING_SPACE_DEFAULT,
         "limit": 10,

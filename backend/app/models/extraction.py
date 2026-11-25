@@ -145,6 +145,12 @@ class Extraction(Base):
             postgresql_using="gin",
             postgresql_ops={"supplier_name_norm": "gin_trgm_ops"},
         ),
+        # lower(customer_name) % :q and ILIKE '%q%' (search + the customer filter).
+        Index(
+            "ix_extractions_customer_name_trgm",
+            text("lower(customer_name) gin_trgm_ops"),
+            postgresql_using="gin",
+        ),
         Index("ix_extractions_invoice_date", "invoice_date"),
         Index("ix_extractions_total", "total"),
         Index("ix_extractions_review_status", "review_status"),

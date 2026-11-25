@@ -9,8 +9,8 @@ from typing import Any, Literal
 from pydantic import Field
 
 from app.api.schemas.common import ApiModel, Money, UtcDateTime
-from app.api.services.search import SearchMode
 from app.models.enums import ReviewStatus, RunStatus
+from app.search.types import MatchType, SearchMode
 
 MAX_RUN_DOCUMENTS = 500
 
@@ -39,23 +39,38 @@ class RunOut(ApiModel):
     )
 
 
+class SegmentOut(ApiModel):
+    """Render as TEXT (never as HTML); emphasize when highlight is true."""
+
+    text: str
+    highlight: bool
+
+
 class SearchHitOut(ApiModel):
     document_id: uuid.UUID
-    extraction_id: uuid.UUID
+    extraction_id: uuid.UUID | None = Field(description="null when the hit can't be tied to one invoice.")
     score: float = Field(ge=0, le=1)
-    snippet: str = Field(description="HTML-escaped; the match is wrapped in <mark>.")
+    match_type: MatchType
+    unit_index: int | None = Field(description="Page / frame / sheet of the best match (for the preview).")
+    snippet_segments: list[SegmentOut]
+    filename: str
     invoice_number: str | None
     invoice_date: date | None
     supplier_name: str | None
     customer_name: str | None
     total: Money | None
     currency: str | None
-    review_status: ReviewStatus
+    review_status: ReviewStatus | None
 
 
 class SearchResponse(ApiModel):
     mode: SearchMode
     items: list[SearchHitOut]
+    total: int = Field(description="Ranked results available (capped at MAX_SEARCH_RESULTS).")
+    offset: int
+    limit: int
+    degraded: bool = Field(description="true: semantic ranking was unavailable; these are keyword results.")
+    degraded_reason: str | None = None
 
 
 class Percentiles(ApiModel):

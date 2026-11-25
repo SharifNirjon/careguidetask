@@ -22,6 +22,7 @@ class RateClass(StrEnum):
     UPLOAD = "upload"
     WRITE = "write"
     READ = "read"
+    SEARCH = "search"  # stricter: a semantic query spends embedding quota
 
 
 class ApiRateLimiter:

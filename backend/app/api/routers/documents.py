@@ -18,8 +18,9 @@ from app.api.schemas.documents import DocumentDetail, DocumentSummary, EventOut,
 from app.api.schemas.jobs import JobOut, ReprocessRequest
 from app.api.schemas.results import DocumentResults
 from app.api.services.documents import DocumentService, IncomingFile
-from app.api.services.filters import DocumentFilters, SortField, SortOrder
+from app.api.services.filters import SortField, SortOrder
 from app.api.services.jobs import JobService
+from app.search.filters import DocumentFilters
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 

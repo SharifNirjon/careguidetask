@@ -60,9 +60,12 @@ def get_principal(
 
 def _limit_for(container: Container, rate_class: RateClass) -> int:
     api = container.api
-    return {RateClass.UPLOAD: api.upload_rpm, RateClass.WRITE: api.write_rpm, RateClass.READ: api.read_rpm}[
-        rate_class
-    ]
+    return {
+        RateClass.UPLOAD: api.upload_rpm,
+        RateClass.WRITE: api.write_rpm,
+        RateClass.READ: api.read_rpm,
+        RateClass.SEARCH: api.search_rpm,
+    }[rate_class]
 
 
 def guard(role: ApiRole, rate_class: RateClass) -> Callable[..., Principal]:
@@ -84,6 +87,7 @@ def guard(role: ApiRole, rate_class: RateClass) -> Callable[..., Principal]:
 
 
 Viewer = Annotated[Principal, Depends(guard(ApiRole.VIEWER, RateClass.READ))]
+Searcher = Annotated[Principal, Depends(guard(ApiRole.VIEWER, RateClass.SEARCH))]
 ReviewerWrite = Annotated[Principal, Depends(guard(ApiRole.REVIEWER, RateClass.WRITE))]
 ReviewerUpload = Annotated[Principal, Depends(guard(ApiRole.REVIEWER, RateClass.UPLOAD))]
 AdminRead = Annotated[Principal, Depends(guard(ApiRole.ADMIN, RateClass.READ))]

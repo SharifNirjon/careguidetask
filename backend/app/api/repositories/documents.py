@@ -14,11 +14,10 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Final
 
-from sqlalchemy import ColumnElement, Select, and_, exists, func, literal, or_, select, tuple_
+from sqlalchemy import ColumnElement, Select, and_, func, literal, select, tuple_
 from sqlalchemy.orm import Session, aliased
 
-from app.api.services.filters import DocumentFilters, SortField, SortOrder
-from app.extraction.normalize import invoice_number_norm, supplier_name_norm
+from app.api.services.filters import SortField, SortOrder
 from app.models import (
     Document,
     DocumentUnit,
@@ -27,92 +26,14 @@ from app.models import (
     ProcessingJob,
     ValidationIssue,
 )
-from app.models.enums import JobStatus, Severity
+from app.models.enums import Severity
+from app.search.filters import DocumentFilters, document_conditions
 
 # Stand-ins for NULL so missing values sort last in either direction.
 NULL_DATE_HIGH: Final = date(9999, 12, 31)
 NULL_DATE_LOW: Final = date(1, 1, 1)
 NULL_TOTAL_HIGH: Final = Decimal("99999999999999.9999")
 NULL_TOTAL_LOW: Final = -NULL_TOTAL_HIGH
-ACTIVE_JOB_STATUSES: Final = (JobStatus.QUEUED, JobStatus.RUNNING)
-
-
-def escape_like(text: str) -> str:
-    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
-def open_issue_exists(document_id: Any, rule_code: Any | None = None) -> ColumnElement[bool]:
-    """An active, unresolved issue on a current extraction of the document."""
-    e = aliased(Extraction)
-    conditions = [
-        ValidationIssue.extraction_id == e.id,
-        e.document_id == document_id,
-        e.is_current.is_(True),
-        ValidationIssue.superseded_at.is_(None),
-        ValidationIssue.resolved_at.is_(None),
-    ]
-    if rule_code is not None:
-        conditions.append(ValidationIssue.rule_code == rule_code)
-    return exists(
-        select(ValidationIssue.id).join(e, ValidationIssue.extraction_id == e.id).where(*conditions)
-    )
-
-
-def extraction_conditions(e: Any, f: DocumentFilters) -> list[ColumnElement[bool]]:
-    """Filters that apply to one extraction row `e` (shared with search)."""
-    conditions: list[ColumnElement[bool]] = []
-    if f.review_status is not None:
-        conditions.append(e.review_status == f.review_status)
-    if f.supplier:
-        key = supplier_name_norm(f.supplier) or f.supplier.casefold()
-        conditions.append(
-            or_(
-                e.supplier_name_norm.op("%")(key),
-                e.supplier_name_norm.ilike(f"%{escape_like(key)}%", escape="\\"),
-            )
-        )
-    if f.customer:
-        conditions.append(e.customer_name.ilike(f"%{escape_like(f.customer)}%", escape="\\"))
-    if f.invoice_number:
-        conditions.append(e.invoice_number_norm == (invoice_number_norm(f.invoice_number) or ""))
-    if f.invoice_date_from:
-        conditions.append(e.invoice_date >= f.invoice_date_from)
-    if f.invoice_date_to:
-        conditions.append(e.invoice_date <= f.invoice_date_to)
-    if f.total_min is not None:
-        conditions.append(e.total >= f.total_min)
-    if f.total_max is not None:
-        conditions.append(e.total <= f.total_max)
-    if f.currency:
-        conditions.append(e.currency == f.currency.upper())
-    return conditions
-
-
-def document_conditions(f: DocumentFilters) -> list[ColumnElement[bool]]:
-    conditions: list[ColumnElement[bool]] = [Document.deleted_at.is_(None)]
-    if f.status is not None:
-        conditions.append(Document.status == f.status)
-    if f.file_type is not None:
-        conditions.append(Document.mime_type == f.file_type.mime_type)
-    if f.uploaded_from is not None:
-        conditions.append(Document.created_at >= f.uploaded_from)
-    if f.uploaded_to is not None:
-        conditions.append(Document.created_at <= f.uploaded_to)
-    if f.has_open_issues is not None:
-        has = open_issue_exists(Document.id)
-        conditions.append(has if f.has_open_issues else ~has)
-    if f.rule_code is not None:
-        conditions.append(open_issue_exists(Document.id, f.rule_code))
-    if f.touches_extractions:
-        e = aliased(Extraction)
-        conditions.append(
-            exists(
-                select(e.id).where(
-                    e.document_id == Document.id, e.is_current.is_(True), *extraction_conditions(e, f)
-                )
-            )
-        )
-    return conditions
 
 
 @dataclass(frozen=True, slots=True)

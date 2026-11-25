@@ -10,6 +10,7 @@ search per space and re-embed later.
 from __future__ import annotations
 
 import math
+from collections.abc import Collection
 from dataclasses import dataclass
 from functools import partial
 from typing import Literal
@@ -86,11 +87,21 @@ class EmbeddingGateway:
         self._settings = settings
         self._dim = dim
 
-    def embed(self, texts: list[str], *, input_type: InputType) -> EmbeddingResult:
-        """One request per EMBED_BATCH_SIZE inputs (every request costs daily quota)."""
+    def embed(
+        self, texts: list[str], *, input_type: InputType, spaces: Collection[str] | None = None
+    ) -> EmbeddingResult:
+        """One request per EMBED_BATCH_SIZE inputs (every request costs daily quota).
+
+        `spaces` restricts which spaces may answer: a search query must be embedded
+        in the space of the chunks it will be compared with, and re-embedding must
+        land in the primary space (never "fall back" to the space it is leaving).
+        """
         if not self._settings.openrouter_api_key.get_secret_value():
             raise LLMAuthError("OPENROUTER_API_KEY is not set")
-        configs = self._settings.embedding_models
+        all_configs = self._settings.embedding_models
+        configs = [c for c in all_configs if spaces is None or c.space in spaces]
+        if not configs:
+            raise LLMUnavailableError({"spaces": f"no configured model for {sorted(spaces or [])}"})
         chunks = batches(texts, self._settings.embed_batch_size)
         done: dict[str, dict[int, _Batch]] = {}  # space -> batch index -> result
         failures: dict[str, str] = {}
@@ -112,7 +123,7 @@ class EmbeddingGateway:
                 model_used=",".join(dict.fromkeys(batch.model for batch in ordered)),
                 space=config.space,
                 dims=self._dim,
-                is_primary_space=config.space == configs[0].space,
+                is_primary_space=config.space == all_configs[0].space,
                 truncated_inputs=sum(batch.truncated for batch in ordered),
             )
         raise LLMUnavailableError(failures)

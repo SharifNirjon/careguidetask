@@ -8,9 +8,9 @@ from typing import Annotated, Final
 
 from fastapi import Query
 
-from app.api.services.filters import DocumentFilters
 from app.models.enums import DocumentStatus, ReviewStatus, RuleCode
 from app.pipeline.types import FileKind
+from app.search.filters import DocumentFilters
 
 MAX_FILTER_CHARS: Final = 200
 PAGE_MAX: Final = 100
