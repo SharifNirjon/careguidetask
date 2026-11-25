@@ -9,7 +9,7 @@ checks the result, makes it searchable, and sends anything uncertain to a human
 reviewer. It **never invents values**: every field an LLM returns must be backed by
 text found in the document, or it is rejected.
 
-![Review screen](docs/images/ui-review.png)
+
 
 ## Features
 
