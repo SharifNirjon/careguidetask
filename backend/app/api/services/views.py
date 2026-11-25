@@ -199,6 +199,8 @@ def extraction_out(
         id=extraction.id,
         document_id=extraction.document_id,
         invoice_index=extraction.invoice_index,
+        unit_start=extraction.unit_start,
+        unit_end=extraction.unit_end,
         version=extraction.version,
         is_current=extraction.is_current,
         lock_version=extraction.lock_version,

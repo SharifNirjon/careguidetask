@@ -973,6 +973,16 @@
             ],
             "title": "Reviewed By"
           },
+          "unit_end": {
+            "description": "Last page / frame / sheet (0-based, inclusive).",
+            "title": "Unit End",
+            "type": "integer"
+          },
+          "unit_start": {
+            "description": "First page / frame / sheet (0-based) of this invoice.",
+            "title": "Unit Start",
+            "type": "integer"
+          },
           "updated_at": {
             "examples": [
               "2026-03-01T12:00:00Z"
@@ -990,6 +1000,8 @@
           "id",
           "document_id",
           "invoice_index",
+          "unit_start",
+          "unit_end",
           "version",
           "is_current",
           "lock_version",
@@ -2769,6 +2781,54 @@
         "title": "StatsOut",
         "type": "object"
       },
+      "TableBlockOut": {
+        "additionalProperties": false,
+        "properties": {
+          "headers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Headers",
+            "type": "array"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/TableRowOut"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "headers",
+          "rows"
+        ],
+        "title": "TableBlockOut",
+        "type": "object"
+      },
+      "TableRowOut": {
+        "additionalProperties": false,
+        "properties": {
+          "cells": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cells",
+            "type": "array"
+          },
+          "row_number": {
+            "description": "1-based row number in the source sheet.",
+            "title": "Row Number",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "row_number",
+          "cells"
+        ],
+        "title": "TableRowOut",
+        "type": "object"
+      },
       "Throughput": {
         "additionalProperties": false,
         "properties": {
@@ -2791,6 +2851,47 @@
           "failed"
         ],
         "title": "Throughput",
+        "type": "object"
+      },
+      "UnitTableOut": {
+        "additionalProperties": false,
+        "description": "The parsed rows of a sheet / CSV unit (for showing spreadsheet evidence).",
+        "properties": {
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/TableBlockOut"
+            },
+            "title": "Blocks",
+            "type": "array"
+          },
+          "sheet_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sheet Name"
+          },
+          "truncated": {
+            "description": "true when rows beyond MAX_TABLE_ROWS were left out.",
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "unit_index": {
+            "title": "Unit Index",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "unit_index",
+          "sheet_name",
+          "blocks",
+          "truncated"
+        ],
+        "title": "UnitTableOut",
         "type": "object"
       },
       "UploadError": {
@@ -4147,6 +4248,113 @@
           }
         ],
         "summary": "Page / frame preview (PNG)",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/documents/{document_id}/units/{unit_index}/table": {
+      "get": {
+        "description": "The parsed rows of a spreadsheet or CSV unit (max 2,000), grouped by table block, so a reviewer can see the cell a field came from. 404 for page/image units.",
+        "operationId": "unit_table_api_v1_documents__document_id__units__unit_index__table_get",
+        "parameters": [
+          {
+            "description": "Document id.",
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "description": "Document id.",
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "unit_index",
+            "required": true,
+            "schema": {
+              "maximum": 100000,
+              "minimum": 0,
+              "title": "Unit Index",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnitTableOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "Missing, invalid or revoked API key"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "The key's role does not allow this"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "Not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "Invalid fields (see errors[])"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "Rate limit exceeded (see Retry-After)"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Parsed sheet / CSV rows",
         "tags": [
           "documents"
         ]

@@ -14,7 +14,7 @@ from app.api.deps import AdminWrite, ContainerDep, ReviewerUpload, ReviewerWrite
 from app.api.etag import conditional_json
 from app.api.routers.params import PAGE_DEFAULT, Cursor, Limit, document_filters
 from app.api.schemas.common import Page, problems
-from app.api.schemas.documents import DocumentDetail, DocumentSummary, EventOut, UploadOutcome
+from app.api.schemas.documents import DocumentDetail, DocumentSummary, EventOut, UnitTableOut, UploadOutcome
 from app.api.schemas.jobs import JobOut, ReprocessRequest
 from app.api.schemas.results import DocumentResults
 from app.api.services.documents import DocumentService, IncomingFile
@@ -170,6 +170,24 @@ def unit_image(
     return StreamingResponse(
         _stream(image), media_type="image/png", headers={"Cache-Control": "private, max-age=3600"}
     )
+
+
+@router.get(
+    "/{document_id}/units/{unit_index}/table",
+    response_model=UnitTableOut,
+    summary="Parsed sheet / CSV rows",
+    description="The parsed rows of a spreadsheet or CSV unit (max 2,000), grouped by table block, so a "
+    "reviewer can see the cell a field came from. 404 for page/image units.",
+    responses=problems(403, 404),
+)
+def unit_table(
+    document_id: DocumentId,
+    unit_index: Annotated[int, Path(ge=0, le=100_000)],
+    _: Viewer,
+    session: SessionDep,
+    container: ContainerDep,
+) -> UnitTableOut:
+    return DocumentService(session, container).unit_table(document_id, unit_index)
 
 
 @router.get(

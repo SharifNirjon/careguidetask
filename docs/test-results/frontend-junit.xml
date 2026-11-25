@@ -1,0 +1,215 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="98" failures="0" errors="0" time="7.3284455">
+    <testsuite name="src/components/ui/form-controls.test.tsx" timestamp="2026-11-25T17:43:18.154Z" hostname="LAPTOP-JU1LUNRV" tests="2" failures="0" errors="0" skipped="0" time="0.7384795">
+        <testcase classname="src/components/ui/form-controls.test.tsx" name="Textarea &gt; submits the form on Ctrl+Enter" time="0.4519998">
+        </testcase>
+        <testcase classname="src/components/ui/form-controls.test.tsx" name="Textarea &gt; keeps Enter alone as a newline" time="0.2616882">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/features/review/review-panel.test.tsx" timestamp="2026-11-25T17:43:18.159Z" hostname="LAPTOP-JU1LUNRV" tests="9" failures="0" errors="0" skipped="0" time="4.0176252">
+        <testcase classname="src/features/review/review-panel.test.tsx" name="fields form &gt; PATCH sends only dirty fields with If-Match = lock_version" time="1.2787874">
+        </testcase>
+        <testcase classname="src/features/review/review-panel.test.tsx" name="fields form &gt; Ctrl+S saves" time="0.6404734">
+        </testcase>
+        <testcase classname="src/features/review/review-panel.test.tsx" name="fields form &gt; 412 opens the conflict dialog" time="0.4650272">
+        </testcase>
+        <testcase classname="src/features/review/review-panel.test.tsx" name="fields form &gt; 422 shows the server&apos;s errors inline" time="0.5032096">
+        </testcase>
+        <testcase classname="src/features/review/review-panel.test.tsx" name="fields form &gt; client-side validation blocks a malformed amount before any request" time="0.3839262">
+        </testcase>
+        <testcase classname="src/features/review/review-panel.test.tsx" name="issues and approval &gt; Apply suggestion fills the field (the user still saves)" time="0.2913625">
+        </testcase>
+        <testcase classname="src/features/review/review-panel.test.tsx" name="issues and approval &gt; Approve is disabled with an explanation while errors are open" time="0.1626737">
+        </testcase>
+        <testcase classname="src/features/review/review-panel.test.tsx" name="issues and approval &gt; Approve is enabled once the error is resolved" time="0.1526973">
+        </testcase>
+        <testcase classname="src/features/review/review-panel.test.tsx" name="issues and approval &gt; shows ungrounded model suggestions without filling them in" time="0.1231889">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/features/review/schemas.test.ts" timestamp="2026-11-25T17:43:18.162Z" hostname="LAPTOP-JU1LUNRV" tests="15" failures="0" errors="0" skipped="0" time="0.0755346">
+        <testcase classname="src/features/review/schemas.test.ts" name="buildCorrection (PATCH sends only what changed) &gt; returns null when nothing changed" time="0.0056719">
+        </testcase>
+        <testcase classname="src/features/review/schemas.test.ts" name="buildCorrection (PATCH sends only what changed) &gt; ignores numerically equal amounts" time="0.0010428">
+        </testcase>
+        <testcase classname="src/features/review/schemas.test.ts" name="buildCorrection (PATCH sends only what changed) &gt; sends only dirty header fields; empty means null" time="0.0023258">
+        </testcase>
+        <testcase classname="src/features/review/schemas.test.ts" name="buildCorrection (PATCH sends only what changed) &gt; turns line edits into add / update / delete ops and maps them to rows" time="0.0046166">
+        </testcase>
+        <testcase classname="src/features/review/schemas.test.ts" name="form schema mirrors the backend formats &gt; total = 12,50 valid: false" time="0.0105129">
+        </testcase>
+        <testcase classname="src/features/review/schemas.test.ts" name="form schema mirrors the backend formats &gt; total = 12.5 valid: true" time="0.0017542">
+        </testcase>
+        <testcase classname="src/features/review/schemas.test.ts" name="form schema mirrors the backend formats &gt; total =  valid: true" time="0.0033566">
+        </testcase>
+        <testcase classname="src/features/review/schemas.test.ts" name="form schema mirrors the backend formats &gt; invoice_date = 2026-02-30 valid: false" time="0.0011535">
+        </testcase>
+        <testcase classname="src/features/review/schemas.test.ts" name="form schema mirrors the backend formats &gt; invoice_date = 01/03/2026 valid: false" time="0.0011124">
+        </testcase>
+        <testcase classname="src/features/review/schemas.test.ts" name="form schema mirrors the backend formats &gt; invoice_date = 2026-03-01 valid: true" time="0.0013899">
+        </testcase>
+        <testcase classname="src/features/review/schemas.test.ts" name="form schema mirrors the backend formats &gt; currency = eur valid: true" time="0.000761">
+        </testcase>
+        <testcase classname="src/features/review/schemas.test.ts" name="form schema mirrors the backend formats &gt; currency = EURO valid: false" time="0.0015522">
+        </testcase>
+        <testcase classname="src/features/review/schemas.test.ts" name="hints (UX only) &gt; flags quantity x price != amount, exactly" time="0.0010903">
+        </testcase>
+        <testcase classname="src/features/review/schemas.test.ts" name="hints (UX only) &gt; flags lines that don&apos;t add up to the subtotal" time="0.0074351">
+        </testcase>
+        <testcase classname="src/features/review/schemas.test.ts" name="formPathFor &gt; maps issue field paths to form fields" time="0.0039786">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/features/search/search.test.tsx" timestamp="2026-11-25T17:43:18.166Z" hostname="LAPTOP-JU1LUNRV" tests="10" failures="0" errors="0" skipped="0" time="0.1810512">
+        <testcase classname="src/features/search/search.test.tsx" name="search rules (semantic queries spend quota) &gt; keyword &quot;a&quot; -&gt; auto after 300 ms" time="0.0051447">
+        </testcase>
+        <testcase classname="src/features/search/search.test.tsx" name="search rules (semantic queries spend quota) &gt; keyword &quot;&quot; -&gt; auto after null ms" time="0.0008903">
+        </testcase>
+        <testcase classname="src/features/search/search.test.tsx" name="search rules (semantic queries spend quota) &gt; hybrid &quot;ab&quot; -&gt; auto after null ms" time="0.0005836">
+        </testcase>
+        <testcase classname="src/features/search/search.test.tsx" name="search rules (semantic queries spend quota) &gt; hybrid &quot;abc&quot; -&gt; auto after 600 ms" time="0.0005331">
+        </testcase>
+        <testcase classname="src/features/search/search.test.tsx" name="search rules (semantic queries spend quota) &gt; semantic &quot;   ab  &quot; -&gt; auto after null ms" time="0.0039403">
+        </testcase>
+        <testcase classname="src/features/search/search.test.tsx" name="search rules (semantic queries spend quota) &gt; Enter never runs semantic/hybrid under 3 characters" time="0.0007819">
+        </testcase>
+        <testcase classname="src/features/search/search.test.tsx" name="useCommittedQuery debounce &gt; keyword commits 300 ms after typing stops" time="0.0604084">
+        </testcase>
+        <testcase classname="src/features/search/search.test.tsx" name="useCommittedQuery debounce &gt; hybrid waits 600 ms idle, and Enter commits at once" time="0.0233824">
+        </testcase>
+        <testcase classname="src/features/search/search.test.tsx" name="useCommittedQuery debounce &gt; hybrid never runs for fewer than 3 characters" time="0.0093098">
+        </testcase>
+        <testcase classname="src/features/search/search.test.tsx" name="Snippet &gt; renders segments as text: markup in documents stays inert" time="0.0507818">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/features/upload/upload.test.tsx" timestamp="2026-11-25T17:43:18.174Z" hostname="LAPTOP-JU1LUNRV" tests="4" failures="0" errors="0" skipped="0" time="1.8258822">
+        <testcase classname="src/features/upload/upload.test.tsx" name="upload flow &gt; shows per-file outcomes, and a retry reuses the Idempotency-Key" time="0.915039">
+        </testcase>
+        <testcase classname="src/features/upload/upload.test.tsx" name="upload flow &gt; a new selection starts a new batch (new key)" time="0.6072644">
+        </testcase>
+        <testcase classname="src/features/upload/upload.test.tsx" name="upload flow &gt; maps a 413 to a friendly error with the request id" time="0.2826291">
+        </testcase>
+        <testcase classname="src/features/upload/upload.test.tsx" name="uploadFiles progress &gt; reports XHR upload progress" time="0.0021093">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/lib/api/errors.test.ts" timestamp="2026-11-25T17:43:18.176Z" hostname="LAPTOP-JU1LUNRV" tests="10" failures="0" errors="0" skipped="0" time="0.0335506">
+        <testcase classname="src/lib/api/errors.test.ts" name="toAppError &gt; maps problem+json, including field errors and the request id" time="0.006021">
+        </testcase>
+        <testcase classname="src/lib/api/errors.test.ts" name="toAppError &gt; falls back to the response header request id and the server&apos;s detail" time="0.0008489">
+        </testcase>
+        <testcase classname="src/lib/api/errors.test.ts" name="toAppError &gt; handles bodies that are not JSON objects" time="0.0005852">
+        </testcase>
+        <testcase classname="src/lib/api/errors.test.ts" name="toAppError &gt; ignores malformed field errors" time="0.0005187">
+        </testcase>
+        <testcase classname="src/lib/api/errors.test.ts" name="messages &gt; TYPE_MISMATCH has a friendly message" time="0.0008031">
+        </testcase>
+        <testcase classname="src/lib/api/errors.test.ts" name="messages &gt; FILE_TOO_LARGE has a friendly message" time="0.0025552">
+        </testcase>
+        <testcase classname="src/lib/api/errors.test.ts" name="messages &gt; PASSWORD_PROTECTED has a friendly message" time="0.0005613">
+        </testcase>
+        <testcase classname="src/lib/api/errors.test.ts" name="messages &gt; LLM_QUOTA_DEFERRED has a friendly message" time="0.0003734">
+        </testcase>
+        <testcase classname="src/lib/api/errors.test.ts" name="messages &gt; version_mismatch has a friendly message" time="0.0004362">
+        </testcase>
+        <testcase classname="src/lib/api/errors.test.ts" name="messages &gt; network errors are status 0 with a friendly message" time="0.0012707">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/lib/format/format.test.ts" timestamp="2026-11-25T17:43:18.179Z" hostname="LAPTOP-JU1LUNRV" tests="29" failures="0" errors="0" skipped="0" time="0.3291638">
+        <testcase classname="src/lib/format/format.test.ts" name="formatMoney &gt; 1234.5600 USD (en-US) -&gt; USD 1,234.56" time="0.2182823">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="formatMoney &gt; 1234.5600 EUR (de-DE) -&gt; 1.234,56 EUR" time="0.0099332">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="formatMoney &gt; 1234.5600 JPY (en-US) -&gt; JPY 1,235" time="0.0010648">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="formatMoney &gt; 1.2345 KWD (en-US) -&gt; KWD 1.235" time="0.001228">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="formatMoney &gt; 0.105 USD (en-US) -&gt; USD 0.11" time="0.0031116">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="formatMoney &gt; 99999999999999.9999 USD (en-US) -&gt; USD 100,000,000,000,000.00" time="0.0009371">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="formatMoney &gt; -50.00 EUR (en-US) -&gt; -EUR 50.00" time="0.0028882">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="formatMoney &gt; 12.5 null (en-US) -&gt; 12.50" time="0.0009351">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="formatMoney &gt; keeps exact precision on huge values (no float rounding)" time="0.0012673">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="formatMoney &gt; null -&gt; —" time="0.0009356">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="formatMoney &gt; undefined -&gt; —" time="0.0003998">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="formatMoney &gt;  -&gt; —" time="0.0004315">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="formatMoney &gt; not a number -&gt; not a number" time="0.0002152">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="formatMoney &gt; falls back to plain formatting for an invalid currency code" time="0.0008099">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="formatMoney &gt; formats plain decimals" time="0.0007234">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="dates &gt; invoice date 2026-03-01 in en-US" time="0.0482299">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="dates &gt; invoice date 2026-03-01 in en-GB" time="0.0023761">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="dates &gt; invoice date 2026-12-31 in en-US" time="0.0049432">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="dates &gt; never shifts a calendar date across time zones" time="0.0012959">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="dates &gt; passes unknown formats through" time="0.0006487">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="dates &gt; shows timestamps in the given zone" time="0.0025285">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="dates &gt; duration null -&gt; —" time="0.000656">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="dates &gt; duration 250 -&gt; 250 ms" time="0.0003939">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="dates &gt; duration 4200 -&gt; 4.2 s" time="0.0002243">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="dates &gt; duration 125000 -&gt; 2 min 5 s" time="0.0001735">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="dates &gt; bytes 512 -&gt; 512 B" time="0.0003802">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="dates &gt; bytes 2048 -&gt; 2.0 KB" time="0.0002078">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="dates &gt; bytes 5242880 -&gt; 5.0 MB" time="0.0001799">
+        </testcase>
+        <testcase classname="src/lib/format/format.test.ts" name="decimal &gt; round-trips exactly" time="0.0009644">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/lib/server/proxy.test.ts" timestamp="2026-11-25T17:43:18.190Z" hostname="LAPTOP-JU1LUNRV" tests="19" failures="0" errors="0" skipped="0" time="0.1271584">
+        <testcase classname="src/lib/server/proxy.test.ts" name="allowlist &gt; GET api/v1/documents -&gt; true" time="0.0052846">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="allowlist &gt; POST api/v1/documents -&gt; true" time="0.0010872">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="allowlist &gt; GET api/v1/documents/11111111-1111-4111-8111-111111111111/units/3/image -&gt; true" time="0.0013008">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="allowlist &gt; PATCH api/v1/extractions/11111111-1111-4111-8111-111111111111 -&gt; true" time="0.0008185">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="allowlist &gt; DELETE api/v1/documents/11111111-1111-4111-8111-111111111111 -&gt; false" time="0.0018849">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="allowlist &gt; GET api/v1/stats -&gt; false" time="0.0020508">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="allowlist &gt; POST api/v1/jobs/reprocess-failed -&gt; false" time="0.0011159">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="allowlist &gt; GET api/v1/documents/not-a-uuid -&gt; false" time="0.0008835">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="allowlist &gt; GET api/v1/documents/11111111-1111-4111-8111-111111111111/../../stats -&gt; false" time="0.0006267">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="allowlist &gt; GET health/ready -&gt; false" time="0.0006246">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="handleProxy &gt; adds the API key server-side and forwards only allowlisted headers" time="0.0230507">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="handleProxy &gt; forwards the query string" time="0.0077167">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="handleProxy &gt; rejects non-allowlisted paths and methods without calling the backend" time="0.0038223">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="handleProxy &gt; rejects cross-origin mutations (CSRF) and mutations without an Origin" time="0.0142245">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="handleProxy &gt; requires a session" time="0.0053623">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="handleProxy &gt; returns a problem with a request id when the backend is down" time="0.0026688">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="handleProxy &gt; streams request bodies upstream" time="0.0263021">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="isSameOriginRequest (CSRF) &gt; accepts a matching Origin and refuses another" time="0.0011325">
+        </testcase>
+        <testcase classname="src/lib/server/proxy.test.ts" name="isSameOriginRequest (CSRF) &gt; falls back to Fetch Metadata only when the browser withholds Origin" time="0.0009048">
+        </testcase>
+    </testsuite>
+</testsuites>

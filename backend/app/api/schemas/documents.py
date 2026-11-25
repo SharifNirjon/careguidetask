@@ -99,6 +99,25 @@ class DocumentDetail(ApiModel):
         return self.model_copy(update={"progress": self.progress.model_copy(update={"elapsed_ms": None})})
 
 
+class TableRowOut(ApiModel):
+    row_number: int = Field(description="1-based row number in the source sheet.")
+    cells: list[str]
+
+
+class TableBlockOut(ApiModel):
+    headers: list[str]
+    rows: list[TableRowOut]
+
+
+class UnitTableOut(ApiModel):
+    """The parsed rows of a sheet / CSV unit (for showing spreadsheet evidence)."""
+
+    unit_index: int
+    sheet_name: str | None
+    blocks: list[TableBlockOut]
+    truncated: bool = Field(description="true when rows beyond MAX_TABLE_ROWS were left out.")
+
+
 class EventOut(ApiModel):
     id: int
     job_id: uuid.UUID | None

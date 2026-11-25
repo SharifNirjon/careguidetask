@@ -74,6 +74,8 @@ class ExtractionOut(ApiModel):
     id: uuid.UUID
     document_id: uuid.UUID
     invoice_index: int
+    unit_start: int = Field(description="First page / frame / sheet (0-based) of this invoice.")
+    unit_end: int = Field(description="Last page / frame / sheet (0-based, inclusive).")
     version: int
     is_current: bool
     lock_version: int = Field(description="Send as If-Match when correcting this extraction.")

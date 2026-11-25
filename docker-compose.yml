@@ -103,6 +103,27 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-careguide}:${POSTGRES_PASSWORD:-careguide}@db:5432/${POSTGRES_DB:-careguide}
       REDIS_URL: redis://redis:6379/0
 
+  frontend:
+    # Review UI (Next.js). The browser only ever talks to this service; it calls
+    # the API server-side with FRONTEND_API_KEY (a reviewer-role key), which never
+    # reaches the browser.
+    build:
+      context: ./frontend
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      BACKEND_URL: http://api:8000
+      API_KEY: ${FRONTEND_API_KEY:-}  # docker compose exec api python -m app.cli api-key create --name review-ui --role reviewer
+      SESSION_SECRET: ${SESSION_SECRET:-}  # 32+ random characters
+      DEMO_USERNAME: ${DEMO_USERNAME:-demo}
+      DEMO_PASSWORD_HASH: ${DEMO_PASSWORD_HASH:-}  # cd frontend && npm run hash-password
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+    ports:
+      # Loopback only: not exposed on the LAN, and avoids Docker Desktop's flaky
+      # IPv6 (::1) forwarding on Windows ("localhost" falls back to 127.0.0.1).
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+
 volumes:
   pgdata:
   storage:

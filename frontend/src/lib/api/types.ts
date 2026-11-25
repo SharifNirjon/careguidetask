@@ -1,0 +1,31 @@
+import type { Schemas } from "./client";
+
+/** Readable aliases for generated schema types (still generated, never hand-written). */
+export type DocumentSummary = Schemas["DocumentSummary"];
+export type DocumentDetail = Schemas["DocumentDetail"];
+export type DocumentPage = Schemas["Page_DocumentSummary_"];
+export type EventOut = Schemas["EventOut"];
+export type InvoiceHeadline = Schemas["InvoiceHeadline"];
+export type DocumentResults = Schemas["DocumentResults"];
+export type ExtractionOut = Schemas["ExtractionOut"];
+export type FieldOut = Schemas["FieldOut"];
+export type LineItemOut = Schemas["LineItemOut"];
+export type IssueOut = Schemas["IssueOut"];
+export type ReconciliationOut = Schemas["ReconciliationOut"];
+export type CorrectionOut = Schemas["CorrectionOut"];
+export type CorrectionRequest = Schemas["CorrectionRequest"];
+export type CorrectionFields = Schemas["CorrectionFields"];
+export type LineItemOp = Schemas["LineItemOp"];
+export type ExtractionVersionOut = Schemas["ExtractionVersionOut"];
+export type UploadOutcome = Schemas["UploadOutcome"];
+export type JobOut = Schemas["JobOut"];
+export type SearchResponse = Schemas["SearchResponse"];
+export type SearchHit = Schemas["SearchHitOut"];
+export type Segment = Schemas["SegmentOut"];
+export type RunOut = Schemas["RunOut"];
+export type DocumentStatus = Schemas["DocumentStatus"];
+export type ReviewStatus = Schemas["ReviewStatus"];
+export type Severity = Schemas["Severity"];
+export type SearchMode = Schemas["SearchMode"];
+export type FromStage = Schemas["FromStage"];
+export type FileKind = Schemas["FileKind"];

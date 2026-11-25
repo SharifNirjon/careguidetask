@@ -25,6 +25,9 @@ from app.api.schemas.documents import (
     DocumentError,
     DocumentSummary,
     EventOut,
+    TableBlockOut,
+    TableRowOut,
+    UnitTableOut,
     UploadError,
     UploadOutcome,
 )
@@ -49,6 +52,8 @@ log = logging.getLogger(__name__)
 LIST_CURSOR_ARITY = 3  # (sort value, created_at, id)
 EVENT_CURSOR_ARITY = 2  # (created_at, id)
 VISUAL_UNITS = frozenset({UnitType.PDF_PAGE, UnitType.IMAGE_FRAME})
+TABULAR_UNITS = frozenset({UnitType.SHEET, UnitType.CSV})
+MAX_TABLE_ROWS = 2000  # a review screen, not an export: bounded response size
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,6 +284,35 @@ class DocumentService:
             media_type=document.mime_type,
             filename=document.original_filename,
             size=document.size_bytes,
+        )
+
+    def unit_table(self, document_id: uuid.UUID, unit_index: int) -> UnitTableOut:
+        """Parsed rows of a sheet/CSV unit, grouped by table block (from structured_data)."""
+        self.get(document_id)
+        unit = self._docs.unit(document_id, unit_index)
+        if unit is None or unit.unit_type not in TABULAR_UNITS:
+            raise NotFound(f"Document {document_id} has no sheet {unit_index}.", code="unit_not_found")
+        data = unit.structured_data or {}
+        rows: list[dict[str, Any]] = data.get("rows") or []
+        blocks = []
+        shown = 0
+        for block in data.get("table_blocks") or []:
+            headers: list[str] = list(block.get("headers") or [])
+            block_rows = [r for r in rows if r.get("_block") == block.get("index")][: MAX_TABLE_ROWS - shown]
+            shown += len(block_rows)
+            blocks.append(
+                TableBlockOut(
+                    headers=headers,
+                    rows=[
+                        TableRowOut(
+                            row_number=int(r.get("_row", 0)), cells=[str(r.get(h, "")) for h in headers]
+                        )
+                        for r in block_rows
+                    ],
+                )
+            )
+        return UnitTableOut(
+            unit_index=unit.unit_index, sheet_name=unit.sheet_name, blocks=blocks, truncated=shown < len(rows)
         )
 
     def unit_image(self, document_id: uuid.UUID, unit_index: int, dpi: int) -> BinaryIO:

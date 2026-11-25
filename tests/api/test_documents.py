@@ -415,6 +415,53 @@ def test_image_frame_preview(
     assert response.status_code == 200 and response.content.startswith(b"\x89PNG")
 
 
+def test_sheet_unit_table(
+    client: TestClient, auth: Auth, files: dict[str, bytes], db_session: Session
+) -> None:
+    document_id = _upload(client, auth, [_part("l.xlsx", files["ledger.xlsx"])]).json()[0]["document_id"]
+    db_session.add(
+        DocumentUnit(
+            document_id=uuid.UUID(document_id),
+            unit_type=UnitType.SHEET,
+            unit_index=0,
+            sheet_name="Ledger",
+            extraction_method=ExtractionMethod.SPREADSHEET,
+            structured_data={
+                "rows": [
+                    {"Invoice": "INV-1", "Total": "10.00", "_row": 2, "_block": 0},
+                    {"Invoice": "INV-2", "Total": "<b>20</b>", "_row": 3, "_block": 0},
+                ],
+                "table_blocks": [{"index": 0, "headers": ["Invoice", "Total"]}],
+            },
+        )
+    )
+    db_session.commit()
+    body = client.get(f"{API}/documents/{document_id}/units/0/table", headers=auth(ApiRole.VIEWER)).json()
+    assert body == {
+        "unit_index": 0,
+        "sheet_name": "Ledger",
+        "truncated": False,
+        "blocks": [
+            {
+                "headers": ["Invoice", "Total"],
+                "rows": [
+                    {"row_number": 2, "cells": ["INV-1", "10.00"]},
+                    {"row_number": 3, "cells": ["INV-2", "<b>20</b>"]},
+                ],
+            }
+        ],
+    }
+
+
+def test_page_unit_has_no_table(
+    client: TestClient, auth: Auth, files: dict[str, bytes], db_session: Session
+) -> None:
+    document_id = _upload(client, auth, [_part("a.pdf", files["invoice.pdf"])]).json()[0]["document_id"]
+    _add_unit(db_session, document_id, UnitType.PDF_PAGE)
+    response = client.get(f"{API}/documents/{document_id}/units/0/table", headers=auth(ApiRole.VIEWER))
+    assert response.status_code == 404
+
+
 def test_sheet_unit_has_no_image(
     client: TestClient, auth: Auth, files: dict[str, bytes], db_session: Session
 ) -> None:
